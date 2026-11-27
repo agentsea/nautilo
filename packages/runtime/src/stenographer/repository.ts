@@ -996,22 +996,51 @@ export async function tryClaimRoom(
     const state = stateRows[0];
     if (!state || state.kind === "task" || state.kind === "access") return null;
     if (!state.has_agent || state.suspended_at !== null) return null;
-    const [manualRecovery] = state.replay_batch_error_code !== "provider_outcome_unknown"
-      || state.replay_batch_id === null
-      || state.replay_batch_attempt_count === null
+    const replayAttempt = state.replay_batch_attempt_count === null
       || state.replay_batch_attempt_count === undefined
+      ? null
+      : asNumber(state.replay_batch_attempt_count);
+    // Funding spends a manual grant only immediately before the model wire.
+    // Until then, the expired product lease remains the durable proof that a
+    // running batch owns this exact unspent grant. Reclaim only that lease;
+    // ordinary uncertain attempts still fall through to replay-safety below.
+    const reclaimingUnspentRecovery =
+      state.replay_batch_status === "running"
+      && state.replay_batch_id !== null
+      && replayAttempt !== null
+      && state.lease_token !== null
+      && state.lease_expires_at !== null
+      && asDate(state.lease_expires_at).getTime() <= now.getTime();
+    const claimingFreshRecovery =
+      state.replay_batch_status === "failed"
+      && state.replay_batch_error_code === "provider_outcome_unknown"
+      && state.replay_batch_id !== null
+      && replayAttempt !== null;
+    const [manualRecovery] = !claimingFreshRecovery && !reclaimingUnspentRecovery
       ? []
       : await tx.select({
           id: roomJournalModelRecoveries.id,
           targetModelId: roomJournalModelRecoveries.targetModelId,
+          claimLeaseToken: roomJournalModelRecoveries.claimLeaseToken,
         }).from(roomJournalModelRecoveries).where(and(
           eq(roomJournalModelRecoveries.roomId, roomId),
           eq(roomJournalModelRecoveries.workKind, "extraction"),
-          eq(roomJournalModelRecoveries.workId, state.replay_batch_id),
+          eq(roomJournalModelRecoveries.workId, state.replay_batch_id!),
           eq(roomJournalModelRecoveries.rebuildGeneration, asNumber(state.rebuild_generation)),
-          eq(roomJournalModelRecoveries.observedAttempt, asNumber(state.replay_batch_attempt_count)),
           isNull(roomJournalModelRecoveries.spentAt),
-        )).orderBy(desc(roomJournalModelRecoveries.authorizedAt)).limit(1)
+          claimingFreshRecovery
+            ? and(
+                eq(roomJournalModelRecoveries.observedAttempt, replayAttempt),
+                isNull(roomJournalModelRecoveries.claimLeaseToken),
+                isNull(roomJournalModelRecoveries.claimedAt),
+              )
+            : and(
+                lt(roomJournalModelRecoveries.observedAttempt, replayAttempt),
+                eq(roomJournalModelRecoveries.claimLeaseToken, state.lease_token!),
+                isNotNull(roomJournalModelRecoveries.claimedAt),
+                lte(roomJournalModelRecoveries.claimedAt, now),
+              ),
+        )).limit(1)
           .for("update", { of: roomJournalModelRecoveries });
     if (
       state.replay_batch_status === "failed"
@@ -1211,15 +1240,30 @@ export async function tryClaimRoom(
       if (accepted.kind !== "service" || accepted.role !== "memorySummarization") {
         throw new Error("Manual Stenographer extraction recovery binding changed");
       }
-      await tx.update(roomJournalBatches).set({
-        acceptedModelBinding: { ...accepted, modelId: manualRecovery.targetModelId },
-      }).where(eq(roomJournalBatches.id, batch.id));
+      if (reclaimingUnspentRecovery) {
+        if (accepted.modelId !== manualRecovery.targetModelId) {
+          throw new Error("Manual Stenographer extraction recovery binding changed");
+        }
+      } else {
+        await tx.update(roomJournalBatches).set({
+          acceptedModelBinding: { ...accepted, modelId: manualRecovery.targetModelId },
+        }).where(eq(roomJournalBatches.id, batch.id));
+      }
       await tx.update(roomJournalModelRecoveries).set({
         claimLeaseToken: leaseToken,
         claimedAt: now,
       }).where(and(
         eq(roomJournalModelRecoveries.id, manualRecovery.id),
         isNull(roomJournalModelRecoveries.spentAt),
+        reclaimingUnspentRecovery
+          ? eq(
+              roomJournalModelRecoveries.claimLeaseToken,
+              manualRecovery.claimLeaseToken!,
+            )
+          : and(
+              isNull(roomJournalModelRecoveries.claimLeaseToken),
+              isNull(roomJournalModelRecoveries.claimedAt),
+            ),
       ));
     }
     const previousModelResultKnownNonusable =

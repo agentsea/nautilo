@@ -296,6 +296,218 @@ describe("manual Journal recovery on PostgreSQL", () => {
     ))).toHaveLength(1);
   }, 30_000);
 
+  test.each(["live", "historical"] as const)(
+    "reclaims an exact unspent %s extraction after a crash before first model dispatch",
+    async (lane) => {
+      const f = await fixture(`pre-dispatch-crash-${lane}`);
+      if (lane === "historical") {
+        await db.update(roomJournalState).set({
+          historicalBackfillStatus: "pending",
+          historicalBackfillCursorMessageId: 0,
+          historicalBackfillTargetMessageId: f.messageId,
+        }).where(eq(roomJournalState.roomId, f.roomId));
+      }
+      const firstClaimedAt = new Date(Date.now() - 10_000);
+      const first = await tryClaimRoom(
+        db,
+        f.roomId,
+        firstClaimedAt,
+        120_000,
+        lane,
+      );
+      if (!first) throw new Error(`expected ${lane} extraction claim`);
+      await funding(() => async () => "unused", f.userId)
+        .admitExtractionModel(first, extractionModelExposureDependencies(first));
+      const failedAt = new Date(firstClaimedAt.getTime() + 1_000);
+      await recordUnknownAttempt({
+        roomId: f.roomId,
+        callType: "room_stenographer",
+        operationId: first.batchId,
+        modelId: MODEL,
+        at: failedAt,
+      });
+      await failExtraction({
+        claim: first,
+        errorCode: "provider_outcome_unknown",
+        modelId: MODEL,
+        db,
+        now: failedAt,
+      });
+      const authorizedAt = new Date(failedAt.getTime() + 1_000);
+      const queued = await requestManualJournalRecovery({
+        db,
+        now: authorizedAt,
+        observedThrough: failedAt,
+        authorizedBy: f.userId,
+        modelId: RECOVERY_MODEL,
+      });
+      expect(queued.queued).toBeGreaterThanOrEqual(1);
+      expect(queued.held).toBe(0);
+
+      const recoveryClaimedAt = new Date(authorizedAt.getTime() + 1_000);
+      const beforeCrash = await tryClaimRoom(
+        db,
+        f.roomId,
+        recoveryClaimedAt,
+        1,
+        lane,
+      );
+      if (!beforeCrash?.manualModelRecoveryId) {
+        throw new Error("expected manual recovery extraction claim");
+      }
+      const recoveryId = beforeCrash.manualModelRecoveryId;
+      const recoveryLease = beforeCrash.leaseToken;
+
+      const restartedAt = new Date(recoveryClaimedAt.getTime() + 1);
+      const reclaimed = await tryClaimRoom(
+        db,
+        f.roomId,
+        restartedAt,
+        120_000,
+        lane,
+      );
+      expect(reclaimed).toMatchObject({
+        batchId: first.batchId,
+        lane,
+        manualModelRecoveryId: recoveryId,
+      });
+      expect(reclaimed?.leaseToken).not.toBe(recoveryLease);
+      const [unspent] = await db.select().from(roomJournalModelRecoveries)
+        .where(eq(roomJournalModelRecoveries.id, recoveryId));
+      expect(unspent).toMatchObject({
+        claimLeaseToken: reclaimed?.leaseToken,
+        spentAt: null,
+      });
+
+      let calls = 0;
+      const admitted = await funding(
+        () => async () => (calls += 1, "[]"),
+        f.userId,
+      ).admitExtractionModel(
+        reclaimed as ExtractionClaim,
+        extractionModelExposureDependencies(reclaimed as ExtractionClaim),
+      );
+      await admitted.invoke("synthetic prompt");
+      expect(calls).toBe(1);
+      const [spent] = await db.select().from(roomJournalModelRecoveries)
+        .where(eq(roomJournalModelRecoveries.id, recoveryId));
+      expect(spent?.spentAt).not.toBeNull();
+
+      const afterSpentLease = new Date(restartedAt.getTime() + 120_001);
+      expect(await tryClaimRoom(
+        db,
+        f.roomId,
+        afterSpentLease,
+        120_000,
+        lane,
+      )).toBeNull();
+      const [stillSpent] = await db.select().from(roomJournalModelRecoveries)
+        .where(eq(roomJournalModelRecoveries.id, recoveryId));
+      expect(stillSpent?.spentAt).toEqual(spent?.spentAt);
+    },
+    30_000,
+  );
+
+  test("does not reclaim an unspent extraction across generation, lease, or payer fences", async () => {
+    const prepare = async (label: string) => {
+      const f = await fixture(`pre-dispatch-fence-${label}`);
+      const firstAt = new Date();
+      const first = await tryClaimRoom(db, f.roomId, firstAt);
+      if (!first) throw new Error("expected extraction claim");
+      await funding(() => async () => "unused", f.userId)
+        .admitExtractionModel(first, extractionModelExposureDependencies(first));
+      const failedAt = new Date(firstAt.getTime() + 1_000);
+      await recordUnknownAttempt({
+        roomId: f.roomId,
+        callType: "room_stenographer",
+        operationId: first.batchId,
+        modelId: MODEL,
+        at: failedAt,
+      });
+      await failExtraction({
+        claim: first,
+        errorCode: "provider_outcome_unknown",
+        modelId: MODEL,
+        db,
+        now: failedAt,
+      });
+      const authorizedAt = new Date(failedAt.getTime() + 1_000);
+      expect(await requestManualJournalRecovery({
+        db,
+        now: authorizedAt,
+        observedThrough: failedAt,
+        authorizedBy: f.userId,
+        modelId: RECOVERY_MODEL,
+      })).toEqual({ queued: 1, held: 0 });
+      const claimedAt = new Date(authorizedAt.getTime() + 1_000);
+      const claim = await tryClaimRoom(db, f.roomId, claimedAt);
+      if (!claim?.manualModelRecoveryId) {
+        throw new Error("expected manual recovery extraction claim");
+      }
+      await funding(() => async () => "must not run", f.userId)
+        .admitExtractionModel(claim, extractionModelExposureDependencies(claim));
+      return {
+        f,
+        claim,
+        recoveryId: claim.manualModelRecoveryId,
+        restartedAt: new Date(claimedAt.getTime() + 120_001),
+      };
+    };
+
+    const generation = await prepare("generation");
+    await db.update(roomJournalState).set({
+      rebuildGeneration: sql`${roomJournalState.rebuildGeneration} + 1`,
+    }).where(eq(roomJournalState.roomId, generation.f.roomId));
+    expect(await tryClaimRoom(
+      db,
+      generation.f.roomId,
+      generation.restartedAt,
+    )).toBeNull();
+
+    const lease = await prepare("lease");
+    await db.update(roomJournalModelRecoveries).set({
+      claimLeaseToken: randomUUID(),
+    }).where(eq(roomJournalModelRecoveries.id, lease.recoveryId));
+    expect(await tryClaimRoom(
+      db,
+      lease.f.roomId,
+      lease.restartedAt,
+    )).toBeNull();
+
+    const payer = await prepare("payer");
+    await db.update(roomJournalBatches).set({
+      acceptedModelBinding: {
+        version: 1,
+        kind: "human",
+        role: "memorySummarization",
+        modelId: RECOVERY_MODEL,
+        humanUserId: payer.f.userId,
+        preferenceRevision: 1,
+        funding: {
+          kind: "personal",
+          providerRoute: "fixture",
+          credentialId: randomUUID(),
+          credentialRevision: 1,
+        },
+        inputCommitment: `hmac-sha256:${"A".repeat(43)}`,
+      },
+    }).where(eq(roomJournalBatches.id, payer.claim.batchId));
+    let payerRejected: unknown;
+    try {
+      await tryClaimRoom(db, payer.f.roomId, payer.restartedAt);
+    } catch (error) {
+      payerRejected = error;
+    }
+    expect(payerRejected).toBeInstanceOf(Error);
+    expect((payerRejected as Error).message).toContain("recovery binding changed");
+    const [payerRecovery] = await db.select().from(roomJournalModelRecoveries)
+      .where(eq(roomJournalModelRecoveries.id, payer.recoveryId));
+    expect(payerRecovery).toMatchObject({
+      claimLeaseToken: payer.claim.leaseToken,
+      spentAt: null,
+    });
+  }, 30_000);
+
   test("claims and spends an exact compaction hold without publishing twice", async () => {
     const f = await fixture("compaction");
     const [sourceBatch] = await db.insert(roomJournalBatches).values({

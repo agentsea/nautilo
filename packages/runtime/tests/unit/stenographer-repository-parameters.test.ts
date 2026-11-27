@@ -663,6 +663,134 @@ describe("stenographer postgres-js parameters", () => {
     expect(sourceQueryParameters).not.toContain(20);
   });
 
+  test.each([
+    { lane: "live" as const, rebuild: false, generation: 4 },
+    { lane: "live" as const, rebuild: true, generation: 5 },
+    { lane: "historical" as const, rebuild: false, generation: 6 },
+  ])(
+    "reclaims an exact unspent $lane recovery before first dispatch (rebuild=$rebuild)",
+    async ({ lane, rebuild, generation }) => {
+      const roomId = "44444444-4444-4444-8444-444444444444";
+      const batchId = "33333333-3333-4333-8333-333333333333";
+      const recoveryId = "22222222-2222-4222-8222-222222222222";
+      const expiredLease = "77777777-7777-4777-8777-777777777777";
+      const namespaceId = "66666666-6666-4666-8666-666666666666";
+      const recoveryModel = "recovery:model";
+      const queries: SQL[] = [];
+      const updates: Record<string, unknown>[] = [];
+      const cursor = 10;
+      const through = 11;
+      const state = {
+        room_id: roomId,
+        owner_id: "55555555-5555-4555-8555-555555555555",
+        kind: "private",
+        namespace_id: namespaceId,
+        last_processed_message_id: lane === "live" ? cursor : 100,
+        suspended_at: null,
+        lease_token: expiredLease,
+        lease_expires_at: new Date(NOW.getTime() - 1),
+        extraction_retry_after: null,
+        historical_backfill_status: lane === "historical" ? "pending" : "not_needed",
+        historical_backfill_cursor_message_id: lane === "historical" ? cursor : null,
+        historical_backfill_target_message_id: lane === "historical" ? 20 : null,
+        stenographer_prior_conversation_limit: 10,
+        prior_context_floor_message_id: 0,
+        rebuild_generation: generation,
+        rebuild_requested_at: rebuild ? new Date(NOW.getTime() - 60_000) : null,
+        rebuild_target_message_id: rebuild ? 20 : null,
+        has_agent: true,
+        upper_bound_message_id: through,
+        replay_batch_id: batchId,
+        replay_batch_status: "running",
+        replay_batch_error_code: null,
+        replay_batch_attempt_count: 2,
+        replay_through_message_id: through,
+      };
+      const executeResponses: unknown[] = [
+        [],
+        [state],
+        [{
+          id: through,
+          created_at: new Date(NOW.getTime() - 180_000),
+          role: "user",
+          content: "message before recovery dispatch",
+          fingerprint: null,
+          edit_revision: 0,
+          transcript_origin: "main",
+          originated_by: null,
+          display_name: "Alice",
+          handle: "alice",
+          excluded_from_evidence: false,
+        }],
+        [],
+      ];
+      const accepted = {
+        version: 1,
+        kind: "service",
+        role: "memorySummarization",
+        modelId: recoveryModel,
+        inputCommitment: `hmac-sha256:${"A".repeat(43)}`,
+      };
+      const select = scriptedSelect([
+        [{
+          id: recoveryId,
+          targetModelId: recoveryModel,
+          claimLeaseToken: expiredLease,
+        }],
+        [{ binding: accepted }],
+        [],
+        [],
+        [],
+      ]);
+      const tx = {
+        execute: async (query: SQL) => {
+          queries.push(query);
+          return executeResponses.shift() ?? [];
+        },
+        select: select,
+        selectDistinct: () => resultBuilder(() => []),
+        insert: () => resultBuilder(() => [{ id: batchId, attempt_count: 3 }]),
+        update: () => ({
+          set: (value: Record<string, unknown>) => {
+            updates.push(value);
+            return { where: async () => [] };
+          },
+        }),
+      };
+      const db = {
+        transaction: async <T>(run: (executor: typeof tx) => Promise<T>) => run(tx),
+      };
+
+      const claim = await tryClaimRoom(
+        db as never,
+        roomId,
+        NOW,
+        120_000,
+        lane,
+      );
+
+      expect(claim).toMatchObject({
+        batchId,
+        roomId,
+        lane,
+        attemptCount: 3,
+        manualModelRecoveryId: recoveryId,
+        rebuildGeneration: rebuild ? generation : null,
+      });
+      expect(claim?.leaseToken).not.toBe(expiredLease);
+      expect(updates.some((value) =>
+        value["claimLeaseToken"] === claim?.leaseToken
+        && value["claimedAt"] === NOW
+      )).toBeTrue();
+      expect(updates.some((value) => "acceptedModelBinding" in value)).toBeFalse();
+      const stateQuery = queries.map(queryText).find((text) =>
+        text.includes("LEFT JOIN LATERAL")
+      );
+      expect(stateQuery).toContain("rjb.lane =");
+      expect(stateQuery).toContain("rjb.status = 'running'");
+    },
+  );
+
   test("does not reclaim compaction after an uncertain provider outcome", async () => {
     const roomId = "44444444-4444-4444-8444-444444444444";
     let executes = 0;
