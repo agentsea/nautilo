@@ -7,7 +7,7 @@ import type { PersonalMemoryEvidencePort } from "@nautilo/reflection-bridge/serv
 import {
   getServerContextConfig, getCachedServerModelConfigRow, kickServerModelConfigRefresh,
   getEncryptionTransitionPolicy, queryMemoryReviewStatus, retryFailedMemoryReviews,
-  type MemoryReviewStatusInput,
+  type DirectDatabase, type MemoryReviewStatusInput,
 } from "@nautilo/db";
 import { MemoryReviewWorker, PostgresMemoryReviewRepository,
   recoverMemoryReviewTurnsAtStartup, readOrdinaryMemoryReviewCheckpoint, jobManager, resolveMemoryReviewModelId,
@@ -19,6 +19,7 @@ import { enforceRegisteredStrictShadowBoundary } from "./strict-shadow-policy";
 import { createPersonalMemoryReviewAdmitter } from "./personal-memory-review-funding";
 import type { ProfileSoulFingerprintInput, MemoryReviewClaim } from "@nautilo/runtime";
 import type { MemoryReviewOptions } from "@nautilo/agent";
+import { requestManualReviewRecovery } from "./request-manual-review-recovery";
 
 // Match existing Stenographer polling/lease/shutdown policy. The lease is
 // renewable; it fences publication, not a limit on the number of Memory turns.
@@ -45,6 +46,18 @@ export interface ServerMemoryReviewPersonalFundingOptions {
   readonly resolveExposureDependencies: (claim: MemoryReviewClaim, snapshots: readonly ReviewSnapshot[]) =>
     Promise<readonly DurableModelExposureDependency[] | undefined>;
   readonly openHumanSession?: (humanUserId: string, recheck: () => Promise<void>) => CapabilityFundingSession;
+}
+
+export class MemoryReviewManualRecoveryUnavailableError extends Error {
+  constructor(readonly code:
+    | "runtime_stopped"
+    | "paused"
+    | "maintenance_unavailable"
+    | "access_unavailable"
+    | "model_unavailable") {
+    super(`Memory review manual recovery is unavailable: ${code}`);
+    this.name = "MemoryReviewManualRecoveryUnavailableError";
+  }
 }
 
 export function createServerMemoryReviewRuntime(
@@ -160,6 +173,27 @@ export function createServerMemoryReviewRuntime(
       const result = await current.repository.requestModelRecovery(input);
       if (result === "queued") current.worker.wake();
       return result;
+    },
+    async requestManualRecovery(input: Readonly<{
+      db: Pick<DirectDatabase, "transaction" | "select" | "insert" | "update" | "execute">;
+      now: Date;
+      observedThrough: Date;
+      authorizedBy: string;
+    }>) {
+      if (stopped) throw new MemoryReviewManualRecoveryUnavailableError("runtime_stopped");
+      if (!await enabled()) throw new MemoryReviewManualRecoveryUnavailableError("paused");
+      if (!await maintenanceGate.isAcceptingWork()) {
+        throw new MemoryReviewManualRecoveryUnavailableError("maintenance_unavailable");
+      }
+      if (!await protection()) throw new MemoryReviewManualRecoveryUnavailableError("access_unavailable");
+      const selected = model();
+      if (!selected.available || !selected.id) {
+        throw new MemoryReviewManualRecoveryUnavailableError("model_unavailable");
+      }
+      return requestManualReviewRecovery({
+        ...input,
+        modelId: selected.id,
+      });
     },
   };
 }

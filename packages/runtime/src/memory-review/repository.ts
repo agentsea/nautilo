@@ -64,14 +64,16 @@ function serviceModelId(binding: Turn["acceptedModelBinding"]): string | null {
 
 function recoveryPrefix(turns: readonly Turn[], blockedAttemptId: string, now: Date): Turn[] {
   const head = turns[0];
-  if (!head || !hasExactRecoveryCoordinates(turns, head)
+  if (!head?.failureCode || head.failureCode === "publication_uncertain"
+    || !hasExactRecoveryCoordinates(turns, head)
     || turns.some((turn) => turn.leaseUntil && turn.leaseUntil > now)) return [];
   const members = turns.filter((turn) => turn.attemptId === blockedAttemptId);
   const modelId = serviceModelId(head.acceptedModelBinding);
   return modelId !== null && members.length > 0 && members.every((turn, index) =>
     turn.id === turns[index]?.id
     && (turn.state === "completed" || turn.state === "interrupted")
-    && turn.failurePhase === "model" && turn.failureCode === "provider_outcome_unknown"
+    && turn.failurePhase === head.failurePhase && turn.failureCode === head.failureCode
+    && JSON.stringify(turn.acceptedModelBinding) === JSON.stringify(head.acceptedModelBinding)
     && serviceModelId(turn.acceptedModelBinding) === modelId)
     ? members : [];
 }
@@ -250,10 +252,15 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
     currentServiceModelId?: string;
   }): Promise<MemoryReviewClaim | null> {
     // One scope per scan; SQL groups only durable metadata, never transcript text.
-    const recoveryPending = sql`(t.failure_code='provider_outcome_unknown' AND EXISTS (
+    const recoveryPending = sql`(t.failure_code IS NOT NULL AND t.failure_code<>'publication_uncertain' AND EXISTS (
       SELECT 1 FROM ${memoryReviewModelRecoveries} recovery
       WHERE recovery.work_id=t.generation_id AND recovery.head_turn_id=t.id AND recovery.spent_at IS NULL
-        AND recovery.recovery_attempt_id IS NULL
+        AND recovery.recovery_attempt_id IS NULL AND recovery.blocked_attempt_id=t.attempt_id
+        AND NOT EXISTS (SELECT 1 FROM ${memoryReviewTurns} changed
+          WHERE changed.session_id=t.session_id AND changed.agent_id=t.agent_id
+            AND changed.owner_id=t.owner_id AND changed.access_scope=t.access_scope
+            AND changed.receipt_id IS NULL AND changed.attempt_id=recovery.blocked_attempt_id
+            AND changed.updated_at>recovery.authorized_at)
     ))`;
     const automaticModelRecovery = currentServiceModelId === undefined ? sql`false` : sql`(
       t.failure_code=ANY(${sql.param([...AUTOMATIC_MODEL_CHANGE_FAILURES])}::text[])
@@ -290,7 +297,8 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       const [recovery] = await tx.select().from(memoryReviewModelRecoveries)
         .where(eq(memoryReviewModelRecoveries.workId, head.generationId)).for("update");
       const recovering = recovery?.spentAt === null && recovery.recoveryAttemptId === null
-        && recovery.headTurnId === head.id && head.failureCode === "provider_outcome_unknown";
+        && recovery.headTurnId === head.id && recovery.blockedAttemptId === head.attemptId
+        && head.failureCode !== null && head.failureCode !== "publication_uncertain";
       const automaticRecoveryCandidate = recovery === undefined
         && currentServiceModelId !== undefined
         && (AUTOMATIC_MODEL_CHANGE_FAILURES as readonly string[]).includes(head.failureCode ?? "")
@@ -302,8 +310,9 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       const turns = await this.lockScope(tx, head);
       if (turns[0]?.id !== head.id) return null;
       const operatorPrefix = recovering ? recoveryPrefix(turns, recovery.blockedAttemptId, now) : null;
-      if (recovering && operatorPrefix !== null && !matchesRecoveryTurns(operatorPrefix, recovery.turnIds)) {
-        await tx.update(memoryReviewTurns).set({ updatedAt: now }).where(eq(memoryReviewTurns.id, id));
+      if (recovering && operatorPrefix !== null
+        && (!matchesRecoveryTurns(operatorPrefix, recovery.turnIds)
+          || operatorPrefix.some(turn => turn.updatedAt > recovery.authorizedAt))) {
         return null;
       }
       const attemptedPrefix = automaticRecoveryCandidate && head.attemptId !== null
@@ -331,8 +340,8 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       await tx.update(memoryReviewTurns).set({
         attemptId, leaseUntil, lastAttemptAt: now,
         // An expired reservation stays fenced until the operator confirms again.
-        failureCode: recovery ? "provider_outcome_unknown" : null,
-        failurePhase: recovery ? "model" : null, retryAt: null,
+        failureCode: recovery ? head.failureCode : null,
+        failurePhase: recovery ? head.failurePhase : null, retryAt: null,
         ...(automaticBinding === null ? {} : { acceptedModelBinding: automaticBinding }),
       }).where(inArray(memoryReviewTurns.id, turnIds));
       if (recovering) {
@@ -369,9 +378,6 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
         throw new Error("Memory recovery dispatch authorization changed");
       }
       await this.lockClaim(tx, claim);
-      if (!await hasSettledServiceMemoryReview({ roomId: head.roomId, workId: claim.workId, modelId }, tx)) {
-        throw new Error("Memory recovery provider evidence changed");
-      }
       await tx.update(memoryReviewModelRecoveries).set({ spentAt: new Date() })
         .where(eq(memoryReviewModelRecoveries.workId, claim.workId));
     });
@@ -393,7 +399,7 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
         ));
       const modelId = serviceModelId(head?.binding ?? null);
       return head?.recoveryAttemptId === claim.attemptId && modelId !== null
-        && await hasSettledServiceMemoryReview({ ...claim, modelId }, this.db) ? "allow" : "block_unknown";
+        ? "allow" : "block_unknown";
     }
     // The work identity owns wire history, even after a turn's attempt changes.
     const replay = await resolveModelAttemptReplaySafety({
