@@ -227,8 +227,17 @@ export type DurableSleepModelLaneReadiness =
 /** Stable, content-free signal for a transient provider-lane outage. */
 export class DurableSleepModelLaneUnavailableError extends Error {
   readonly retryAfterMilliseconds: number;
+  /**
+   * Only the configured default route owns the process-wide scheduler gate.
+   * An exact retained binding is paused independently so its stale provider
+   * route cannot exclude otherwise runnable model families from this poll.
+   */
+  readonly scope: "configured_default" | "exact_binding";
 
-  constructor(retryAfterMilliseconds: number) {
+  constructor(
+    retryAfterMilliseconds: number,
+    scope: "configured_default" | "exact_binding" = "configured_default",
+  ) {
     if (
       !Number.isSafeInteger(retryAfterMilliseconds)
       || retryAfterMilliseconds < 1
@@ -238,6 +247,7 @@ export class DurableSleepModelLaneUnavailableError extends Error {
     super("Reflection model lane is temporarily unavailable");
     this.name = "DurableSleepModelLaneUnavailableError";
     this.retryAfterMilliseconds = retryAfterMilliseconds;
+    this.scope = scope;
   }
 }
 
@@ -1423,10 +1433,12 @@ export async function runDurableHierarchySleep(input: {
         return;
       }
       if (error instanceof DurableSleepModelLaneUnavailableError) {
-        modelRetryAfterMilliseconds = Math.max(
-          modelRetryAfterMilliseconds ?? 0,
-          error.retryAfterMilliseconds,
-        );
+        if (error.scope === "configured_default") {
+          modelRetryAfterMilliseconds = Math.max(
+            modelRetryAfterMilliseconds ?? 0,
+            error.retryAfterMilliseconds,
+          );
+        }
         for (const item of batch) await pauseClaim(item.claim, now() + error.retryAfterMilliseconds, "provider");
         return;
       }
@@ -1479,7 +1491,12 @@ export async function runDurableHierarchySleep(input: {
           await deferClaim(item.claim, "authority_unavailable");
         } else if (error instanceof DurableSleepModelLaneUnavailableError) {
           item.outcome = "unavailable";
-          modelRetryAfterMilliseconds = Math.max(modelRetryAfterMilliseconds ?? 0, error.retryAfterMilliseconds);
+          if (error.scope === "configured_default") {
+            modelRetryAfterMilliseconds = Math.max(
+              modelRetryAfterMilliseconds ?? 0,
+              error.retryAfterMilliseconds,
+            );
+          }
           await pauseClaim(item.claim, now() + error.retryAfterMilliseconds, "provider");
         } else if (error instanceof DurableSleepProviderOutcomeUnknownError) {
           await completeTerminalClaim(item.claim, "provider_outcome_unknown");
@@ -2165,10 +2182,12 @@ export async function runDurableHierarchySleep(input: {
       }
       if (error instanceof DurableSleepModelLaneUnavailableError) {
         attemptOutcome = "unavailable";
-        modelRetryAfterMilliseconds = Math.max(
-          modelRetryAfterMilliseconds ?? 0,
-          error.retryAfterMilliseconds,
-        );
+        if (error.scope === "configured_default") {
+          modelRetryAfterMilliseconds = Math.max(
+            modelRetryAfterMilliseconds ?? 0,
+            error.retryAfterMilliseconds,
+          );
+        }
         await pauseClaim(claim, now() + error.retryAfterMilliseconds, "provider");
         continue;
       }

@@ -307,9 +307,19 @@ function recordEmbedding(): RecordEmbeddingPort {
   });
 }
 
+function reflectionModelLaneScope(
+  modelId: string,
+  configuredDefaultModelId: string,
+): "configured_default" | "exact_binding" {
+  return modelId === configuredDefaultModelId
+    ? "configured_default"
+    : "exact_binding";
+}
+
 export function classifyReflectionModelInvocationFailure(
   error: unknown,
   modelId: string,
+  configuredDefaultModelId: string,
 ): unknown {
   const failure = mapModelFailure(error);
   if (failure === "unknown") return error;
@@ -321,6 +331,7 @@ export function classifyReflectionModelInvocationFailure(
   }
   return new DurableSleepModelLaneUnavailableError(
     Math.max(1, modelInvokeCooldownRemainingMs(modelId)),
+    reflectionModelLaneScope(modelId, configuredDefaultModelId),
   );
 }
 
@@ -577,9 +588,13 @@ export async function createProductionReflectionMemoryRuntime(
           ),
         });
     const modelId = admitted.modelId;
+    const configuredDefaultModelId = input.resolveModelId();
     const currentCooldown = modelInvokeCooldownRemainingMs(modelId);
     if (currentCooldown > 0) {
-      throw new DurableSleepModelLaneUnavailableError(currentCooldown);
+      throw new DurableSleepModelLaneUnavailableError(
+        currentCooldown,
+        reflectionModelLaneScope(modelId, configuredDefaultModelId),
+      );
     }
     try {
       const sortedClaims = [...claims]
@@ -646,7 +661,11 @@ export async function createProductionReflectionMemoryRuntime(
     } catch (error) {
       if (signal?.aborted) throw error;
       if (error instanceof DurableSleepProviderOutcomeUnknownError) throw error;
-      throw classifyReflectionModelInvocationFailure(error, modelId);
+      throw classifyReflectionModelInvocationFailure(
+        error,
+        modelId,
+        configuredDefaultModelId,
+      );
     }
   };
   const invokeForRecords = async (

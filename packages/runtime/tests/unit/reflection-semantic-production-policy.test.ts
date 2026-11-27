@@ -4,6 +4,7 @@ import type { DirectDatabase } from "@nautilo/db";
 
 import {
   DURABLE_SLEEP_MAX_WORK_ITEMS_PER_RUN,
+  DurableSleepModelLaneUnavailableError,
   ORGANIZER_BATCH_MAX_ITEMS,
   type DurableSleepClaim,
   type DurableSleepSemanticPort,
@@ -88,7 +89,29 @@ describe("production Reflection semantic policy", () => {
     expect(classifyReflectionModelInvocationFailure(
       new MemoryProviderOutcomeUnknownError(),
       "test:no-model",
+      "test:no-model",
     )).toBeInstanceOf(DurableSleepProviderOutcomeUnknownError);
+  });
+  test("limits non-default retained model failures to their exact jobs", () => {
+    expect(classifyReflectionModelInvocationFailure(
+      new Error("provider rejected the retained route"),
+      "test:retained-openai",
+      "test:configured-haiku",
+    )).toMatchObject({
+      scope: "exact_binding",
+    });
+    expect(classifyReflectionModelInvocationFailure(
+      new Error("provider rejected the configured route"),
+      "test:configured-haiku",
+      "test:configured-haiku",
+    )).toMatchObject({
+      scope: "configured_default",
+    });
+    expect(classifyReflectionModelInvocationFailure(
+      new Error("provider rejected the retained route"),
+      "test:retained-openai-2",
+      "test:configured-haiku",
+    )).toBeInstanceOf(DurableSleepModelLaneUnavailableError);
   });
   test("binds one supplied data-operation pair into the existing worker", async () => {
     const claim: DurableSleepClaim = {

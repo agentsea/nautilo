@@ -432,6 +432,93 @@ describe("durable hierarchy Sleep state machine", () => {
     });
   });
 
+  test("contains rejected retained dependency rewrites without blocking fresh work", async () => {
+    const events: string[] = [];
+    const retainedClaims = Array.from({ length: 3 }, (_, index) => ({
+      ...claim(
+        `record:retained-openai-${index + 1}`,
+        "organization",
+        1,
+        "dependency_lost",
+      ),
+      modelBatchFamilyKey: `binding:openai-${index + 1}`,
+    }));
+    const freshClaims = Array.from({ length: 12 }, (_, index) => ({
+      ...claim(`record:fresh-haiku-${index + 1}`, "organization"),
+      modelBatchFamilyKey: "fresh",
+    }));
+    const work = workHarness([...retainedClaims, ...freshClaims], events);
+    const pauses: Parameters<DurableSleepWorkPort["pause"]>[0][] = [];
+    work.port.pause = async (pause) => {
+      pauses.push(pause);
+      return { status: "accepted" };
+    };
+    const semantic = semanticHarness(events);
+    semantic.resolveDependencyLoss = async ({ claim: current }) => {
+      if (!current.recordRef.startsWith("record:retained-openai-")) {
+        return { status: "not_applicable" };
+      }
+      throw new DurableSleepModelLaneUnavailableError(
+        90_000,
+        "exact_binding",
+      );
+    };
+    semantic.loadOrganizerView = (current) => Promise.resolve({
+      status: "ready",
+      view: {
+        ...mixedView(),
+        changed: {
+          handle: "C0",
+          snapshot: snapshot(current.recordRef),
+          dependency: { kind: "record", recordRef: current.recordRef },
+        },
+      },
+    });
+    const admissions: string[][] = [];
+    semantic.invokeOrganizerBatch = async (batchClaims) => {
+      admissions.push(batchClaims.map((item) => item.recordRef));
+      return JSON.stringify({
+        answers: batchClaims.map((_, index) => ({
+          question: `Q${index + 1}`,
+          proposal: { operation: "no_change" },
+        })),
+      });
+    };
+
+    const result = await runDurableHierarchySleep({
+      work: work.port,
+      semantic,
+      budget: {
+        hierarchy: {
+          ...hierarchyBudget,
+          maxModelCalls: 4,
+          maxVisitedRecords: 256,
+          maxCreatedRecords: 8,
+          maxTraversalWork: 256,
+        },
+        maxWorkItems: 16,
+      },
+      now: () => 10_000,
+    });
+
+    expect(admissions.map((batch) => batch.length)).toEqual([8, 4]);
+    expect(admissions.flat()).toEqual(freshClaims.map((item) => item.recordRef));
+    expect(pauses).toHaveLength(3);
+    expect(pauses.every((pause) =>
+      pause.waitingReason === "provider"
+      && pause.nextAttemptAt === 100_000
+      && pause.claim.recordRef.startsWith("record:retained-openai-")
+    )).toBeTrue();
+    expect(result).toMatchObject({
+      claimed: 15,
+      completed: 12,
+      paused: 3,
+      usage: { modelCalls: 2 },
+      diagnostics: { modelBatches: 2, modelBatchItems: 12 },
+    });
+    expect(result.modelRetryAfterMilliseconds).toBeUndefined();
+  });
+
   test("drains an exposure-limited family without mixing the next family", async () => {
     const events: string[] = [];
     const claims = [
