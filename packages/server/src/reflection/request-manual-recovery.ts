@@ -234,7 +234,6 @@ export async function requestManualReflectionRecovery(
   let refusedNextCursor: string | undefined;
   const recoverRefusedPage = async (after: string | null, limit: number) => {
     const proof = await readManualReflectionRefusalRecoveryPage(input.db, {
-      targetModelId: input.modelId,
       observedThrough: input.observedThrough,
       after,
       limit,

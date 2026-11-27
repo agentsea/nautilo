@@ -161,14 +161,12 @@ export type ManualReflectionRefusalRecoveryPage = Readonly<{
 export async function readManualReflectionRefusalRecoveryPage(
   db: ManualRecoveryDb,
   input: Readonly<{
-    targetModelId: string;
     observedThrough: Date;
     after: string | null;
     limit: number;
   }>,
 ): Promise<ManualReflectionRefusalRecoveryPage> {
-  if (!input.targetModelId.trim()
-    || !Number.isFinite(input.observedThrough.getTime())
+  if (!Number.isFinite(input.observedThrough.getTime())
     || !Number.isSafeInteger(input.limit)
     || input.limit < 1) {
     throw new TypeError("Manual Reflection refusal recovery page is invalid");
@@ -186,7 +184,6 @@ export async function readManualReflectionRefusalRecoveryPage(
     lte(work.updatedAt, input.observedThrough),
     eq(sql<string>`${work.acceptedModelBinding}->>'kind'`, "service"),
     eq(sql<string>`${work.acceptedModelBinding}->>'role'`, "memoryReflection"),
-    ne(sql<string>`${work.acceptedModelBinding}->>'modelId'`, input.targetModelId),
   );
   const seedKeys = (await db.selectDistinct({ familyKey: familyKey.as("family_key") })
     .from(work)
@@ -230,8 +227,7 @@ export async function readManualReflectionRefusalRecoveryPage(
       if (invocation?.roomId === null || invocation?.roomId === undefined) return null;
       await acquireRoomWriteLock(db, invocation.roomId);
       const family = await readReflectionFamily(db, invocation.roomId, seed);
-      if (family === null || family.binding.modelId === input.targetModelId
-        || !reflectionFamilyEligible(family)) return null;
+      if (family === null || !reflectionFamilyEligible(family)) return null;
       const recoveryId = family.members[0]?.work.manualRecoveryId;
       const safeManualFamily = typeof recoveryId === "string"
         && family.members.every(({ work: member }) =>

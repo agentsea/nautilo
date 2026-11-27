@@ -666,7 +666,7 @@ test("manual Reflection recovery retains a stale checkpoint behind a pending pub
   }
 });
 
-test("a later Reflection click replaces a fully refused spent family with one fresh grant", async () => {
+test.each(["same", "replacement"])("a later Reflection click grants one fresh attempt on the %s model for a fully refused spent family", async target => {
   const suffix = randomUUID();
   const [operator] = await db.insert(users).values({
     name: "Reflection refusal recovery operator",
@@ -692,7 +692,7 @@ test("a later Reflection click replaces a fully refused spent family with one fr
   const processedAt = new Date("2001-02-01T10:03:00.000Z");
   const retryAt = new Date("2001-02-02T10:00:00.000Z");
   const oldModel = "openai:reflection-old";
-  const newModel = "anthropic:reflection-current";
+  const newModel = target === "same" ? oldModel : "anthropic:reflection-current";
   const binding: MemoryOperationBinding = {
     version: 1, kind: "service", role: "memoryReflection", modelId: oldModel,
     inputCommitment: `hmac-sha256:${"R".repeat(43)}`,
