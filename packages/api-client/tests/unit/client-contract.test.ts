@@ -13,6 +13,7 @@ import {
 import type {
   ChatSearchOptions,
   ChatSearchValidationError,
+  MemoryRecoveryRun,
   RoomMessageSearchOptions,
   RoomMessageSearchValidationError,
 } from "@nautilo/types";
@@ -47,7 +48,7 @@ describe("NautiloApiClient HTTP contracts (mocked fetch)", () => {
 
   test("memory recovery sends one server-wide authorization and reads back the latest admission", async () => {
     const requestId = "11111111-1111-4111-8111-111111111111";
-    const run = { requestId, observedThrough: "2026-11-27T10:00:00Z",
+    const run: MemoryRecoveryRun = { requestId, observedThrough: "2026-11-27T10:00:00Z",
       stenographer: { state: "assessed", queued: 2, held: 0 }, memory: { state: "paused" }, reflection: null };
     const requests: Array<{ method: string; path: string; body: RequestInit["body"] }> = [];
     const mockFetch = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
