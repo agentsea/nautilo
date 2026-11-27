@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { CapabilitySlug, MemoryAdminStatus, MemoryRecoveryRun, ReflectionAdminStatus, StenographerAdminStatus } from "@nautilo/types";
 
 let capabilities = new Set<CapabilitySlug>();
+let operatorId = "first-operator";
 const receipt: MemoryRecoveryRun = { requestId: "11111111-1111-4111-8111-111111111111", observedThrough: "2026-11-27T10:00:00Z",
   stenographer: { state: "assessed" as const, queued: 2, held: 0 }, reflection: { state: "assessed" as const, queued: 8, held: 1 },
   memory: { state: "assessed" as const, queued: 1, held: 0 } };
@@ -14,6 +15,7 @@ const getStenographer = mock(async (): Promise<StenographerAdminStatus> => steno
 const getReflection = mock(async (): Promise<ReflectionAdminStatus> => reflectionFixture());
 const getMemory = mock(async (): Promise<MemoryAdminStatus> => memoryFixture());
 mock.module("../../../hooks/use-can", () => ({ useCan: () => (capability: CapabilitySlug) => capabilities.has(capability) }));
+mock.module("../../../hooks/use-auth", () => ({ useAuth: () => ({ viewer: { sessionUserId: operatorId } }) }));
 mock.module("../../../lib/api", () => ({ apiClient: { admin: {
   memoryRecovery: { latest, run: recover }, stenographerStatus: { get: getStenographer }, reflectionStatus: { get: getReflection }, memoryStatus: { get: getMemory },
 } } }));
@@ -55,6 +57,7 @@ function memoryFixture(): MemoryAdminStatus {
 
 beforeEach(() => {
   reapplyHappyDomGlobals(); cleanup(); capabilities = new Set(["read_server_settings"]);
+  sessionStorage.clear(); operatorId = "first-operator";
   recover.mockClear(); latest.mockClear(); latest.mockImplementation(async () => ({ run: null }));
   getStenographer.mockClear(); getReflection.mockClear(); getMemory.mockClear();
   getStenographer.mockImplementation(async () => stenographerFixture());
@@ -89,15 +92,25 @@ describe("MemoryRecoveryCard", () => {
     expect(view.getAllByText("Needs attention")).toHaveLength(1);
   });
 
-  test("resumes an unavailable processor with the original authorization after a reload", async () => {
+  test("a confirmed partial failure lets the next operator authorize all current failures", async () => {
     capabilities.add("manage_server_operations");
     const partial: MemoryRecoveryRun = { ...receipt, reflection: { state: "unavailable" } };
     latest.mockResolvedValueOnce({ run: partial }).mockResolvedValueOnce({ run: receipt });
     const view = show();
-    await waitFor(() => expect(view.getByRole("status").textContent).toContain("resume this request"));
+    await waitFor(() => expect(view.getByRole("status").textContent).toContain("new assessment"));
     fireEvent.click(view.getByRole("button", { name: "Recover all memory" }));
     await waitFor(() => expect(view.getByRole("status").textContent).toContain("8 queued · 1 held"));
-    expect(recover.mock.calls).toEqual([[partial.requestId]]);
+    expect(recover.mock.calls).toHaveLength(1);
+    expect(recover.mock.calls[0]![0]).not.toBe(partial.requestId);
+  });
+
+  test("an in-progress request resumes its original snapshot", async () => {
+    capabilities.add("manage_server_operations");
+    latest.mockResolvedValueOnce({ run: { ...receipt, memory: null } });
+    const view = show();
+    await waitFor(() => expect(view.getByRole("status").textContent).toContain("Request in progress"));
+    fireEvent.click(view.getByRole("button", { name: "Recover all memory" }));
+    await waitFor(() => expect(recover.mock.calls).toEqual([[receipt.requestId]]));
   });
 
   test("waits for the last receipt before allowing a fresh authorization", async () => {
@@ -115,16 +128,38 @@ describe("MemoryRecoveryCard", () => {
   test("one operator click covers every processor and retries a lost response with the same request", async () => {
     capabilities.add("manage_server_operations");
     recover.mockRejectedValueOnce(new Error("disconnected"));
-    const view = show();
+    let view = show();
     await waitFor(() => expect(view.getByTestId("memory-recovery-summary")).toBeTruthy());
     expect(recover).not.toHaveBeenCalled();
     fireEvent.click(view.getByRole("button", { name: "Recover all memory" }));
     await waitFor(() => expect(view.getByRole("alert").textContent).toContain("same request"));
+    view.unmount();
+    view = show();
+    await waitFor(() => expect(view.getByRole("button", { name: "Recover all memory" }).hasAttribute("disabled")).toBe(false));
     latest.mockImplementation(async () => ({ run: receipt }));
     fireEvent.click(view.getByRole("button", { name: "Recover all memory" }));
     await waitFor(() => expect(view.getByRole("status").textContent).toContain("8 queued · 1 held at request"));
     expect(recover).toHaveBeenCalledTimes(2);
     expect(recover.mock.calls[0]?.[0]).toBe(recover.mock.calls[1]?.[0]);
+  });
+
+  test("an unconfirmed request belongs to the operator who sent it", async () => {
+    capabilities.add("manage_server_operations");
+    recover.mockRejectedValueOnce(new Error("disconnected"));
+    const first = show();
+    await waitFor(() => expect(first.getByTestId("memory-recovery-summary")).toBeTruthy());
+    fireEvent.click(first.getByRole("button", { name: "Recover all memory" }));
+    await waitFor(() => expect(first.getByRole("alert").textContent).toContain("same request"));
+    first.unmount();
+    operatorId = "second-operator";
+    latest.mockResolvedValueOnce({ run: { ...receipt, reflection: { state: "unavailable" } } });
+    const second = show();
+    await waitFor(() => expect(second.getByRole("status").textContent).toContain("new assessment"));
+    expect(second.queryByRole("alert")).toBeNull();
+    fireEvent.click(second.getByRole("button", { name: "Recover all memory" }));
+    await waitFor(() => expect(recover).toHaveBeenCalledTimes(2));
+    expect(recover.mock.calls[1]![0]).not.toBe(recover.mock.calls[0]![0]);
+    expect(recover.mock.calls[1]![0]).not.toBe(receipt.requestId);
   });
 
   test("reports retired summaries independently of newly queued source work", async () => {

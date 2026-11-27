@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { MemoryAdminStatus, MemoryRecoveryLaneResult, MemoryRecoveryRun, ReflectionAdminStatus, StenographerAdminStatus } from "@nautilo/types";
 import { apiClient } from "../../../lib/api";
 import { useCan } from "../../../hooks/use-can";
+import { useAuth } from "../../../hooks/use-auth";
 
 const buttonClass = "rounded-md border border-border bg-background-element px-2.5 py-1 text-xs font-medium text-foreground hover:bg-background-panel disabled:opacity-50";
 type RecoveryState = "catching_up" | "waiting" | "healthy" | "paused" | "needs_attention";
@@ -134,7 +135,7 @@ function ProcessorRow({ name, href, summary }: { name: string; href: string; sum
 function admissionText(lane: MemoryRecoveryLaneResult | null): string {
   if (lane === null) return "Request in progress";
   if (lane.state === "paused") return "Paused by server policy";
-  if (lane.state === "unavailable") return "Could not assess this processor. Press Recover all memory to resume this request.";
+  if (lane.state === "unavailable") return "Could not assess this processor. Recover all memory starts a new assessment of current failures.";
   const admission = lane.queued || lane.held
     ? `${lane.queued.toLocaleString()} queued · ${lane.held.toLocaleString()} held at request`
     : "No work needed a retry";
@@ -155,6 +156,11 @@ function admissionText(lane: MemoryRecoveryLaneResult | null): string {
 }
 
 export function MemoryRecoveryCard() {
+  const { viewer } = useAuth();
+  return <OperatorMemoryRecoveryCard key={viewer.sessionUserId} operatorId={viewer.sessionUserId} />;
+}
+
+function OperatorMemoryRecoveryCard({ operatorId }: { operatorId: string | null }) {
   const can = useCan();
   const canRead = can("read_server_settings");
   const canManage = can("manage_server_operations");
@@ -163,8 +169,10 @@ export function MemoryRecoveryCard() {
   const [running, setRunning] = useState(false);
   const [receiptKnown, setReceiptKnown] = useState(false);
   const [run, setRun] = useState<MemoryRecoveryRun | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const pendingRequest = useRef<string | null>(null);
+  const storageKey = `nautilo:unconfirmed-memory-recovery:${operatorId}`;
+  const [pendingRequest, setPendingRequest] = useState<string | null>(() => {
+    try { return sessionStorage.getItem(storageKey); } catch { return null; }
+  });
   const submitting = useRef(false);
   const refreshSequence = useRef(0);
   const hasRun = run !== null;
@@ -211,17 +219,19 @@ export function MemoryRecoveryCard() {
     if (!canManage || !receiptKnown || submitting.current) return;
     submitting.current = true;
     setRunning(true);
-    setError(null);
-    const unfinished = run && [run.stenographer, run.reflection, run.memory].some(lane => lane === null || lane.state === "unavailable");
-    const requestId = pendingRequest.current ?? (unfinished ? run.requestId : crypto.randomUUID());
-    pendingRequest.current = requestId;
+    const lanes = run && [run.stenographer, run.reflection, run.memory];
+    const inProgress = lanes?.includes(null) && !lanes.some(lane => lane?.state === "unavailable");
+    const requestId = pendingRequest ?? (run && inProgress ? run.requestId : crypto.randomUUID());
+    setPendingRequest(requestId);
+    try { sessionStorage.setItem(storageKey, requestId); } catch { /* In-memory retries remain idempotent. */ }
     try {
       const result = await apiClient.admin.memoryRecovery.run(requestId);
-      pendingRequest.current = null;
+      setPendingRequest(null);
+      try { sessionStorage.removeItem(storageKey); } catch { /* The server has confirmed this request. */ }
       setRun(result);
       await refresh();
     } catch {
-      setError("The server could not confirm the request. Press Recover all memory to resume the same request.");
+      // Keep the request ID through an ambiguous response, including across a tab reload.
     } finally {
       submitting.current = false;
       setRunning(false);
@@ -244,7 +254,7 @@ export function MemoryRecoveryCard() {
         </div>
       </div>
       {canManage && !loading && !receiptKnown ? <p role="alert" className="mt-3 text-xs text-error">Refresh to load the last recovery request before starting another.</p> : null}
-      {error ? <p role="alert" className="mt-3 text-xs text-error">{error}</p> : null}
+      {canManage && pendingRequest && !running ? <p role="alert" className="mt-3 text-xs text-error">The server could not confirm the request. Press Recover all memory to resume the same request.</p> : null}
       {run ? <div role="status" className="mt-3 text-xs">
         <p className="font-semibold">Last recovery request · {new Date(run.observedThrough).toLocaleString()}</p>
         <ul className="mt-1 text-foreground-muted">
