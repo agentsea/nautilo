@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 import { DTO_BASELINE_DECLARATIONS } from "../../baseline/dto-declarations";
 import { BASELINE_REGISTRY } from "../../baseline/existing-debt";
+import { REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS } from "../../baseline/reviewed-manual-memory-recovery";
 import {
   REVIEWED_MEMORY_REVIEW_DTO_DECLARATIONS,
   REVIEWED_MEMORY_REVIEW_RECOVERY_COVERAGE,
@@ -16,16 +17,17 @@ import {
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
 
 describe("Memory review operator recovery inventory", () => {
-  test("pins the exact recovery and Stenographer response contracts", async () => {
+  test("each recovery route has one reviewed contract matching the discovered wire shape", async () => {
     const observations = await discoverHttpDtoInventory(repositoryRoot);
-    const locators = new Set(
-      REVIEWED_MEMORY_REVIEW_DTO_DECLARATIONS.map((entry) => entry.locator),
-    );
+    const reviewed = [...REVIEWED_MEMORY_REVIEW_DTO_DECLARATIONS, ...REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS];
+    const locators = new Set(reviewed.map(entry => entry.locator));
+    expect(locators.size).toBe(reviewed.length);
     const declarations = DTO_BASELINE_DECLARATIONS.filter((entry) =>
       locators.has(entry.locator)
     );
 
-    expect(declarations).toEqual([...REVIEWED_MEMORY_REVIEW_DTO_DECLARATIONS]);
+    expect(declarations).toHaveLength(reviewed.length);
+    for (const contract of reviewed) expect(declarations).toContainEqual(contract);
     expect(auditDtoDeclarations({
       observations: observations.filter((entry) => locators.has(entry.locator)),
       declarations,

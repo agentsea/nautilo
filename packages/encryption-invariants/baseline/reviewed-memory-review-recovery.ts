@@ -3,13 +3,6 @@ import type { DtoDeclaration } from "../src/node/dto-inventory";
 
 const RECOVERY_ROUTE =
   "http:request_response:POST /api/admin/memory-review-recovery";
-const STENOGRAPHER_STATUS_ROUTE =
-  "http:request_response:GET /api/admin/stenographer-status";
-
-const REVIEWED_MEMORY_REVIEW_DTO_LOCATORS = new Set([
-  RECOVERY_ROUTE,
-  STENOGRAPHER_STATUS_ROUTE,
-]);
 
 export const REVIEWED_MEMORY_REVIEW_DTO_DECLARATIONS:
   readonly DtoDeclaration[] = [
@@ -23,16 +16,6 @@ export const REVIEWED_MEMORY_REVIEW_DTO_DECLARATIONS:
     ],
     arbitraryPayloads: [],
   },
-  {
-    observationId:
-      "wire.http.request.response.get.api.admin.stenographer.status.v9h5bb",
-    locator: STENOGRAPHER_STATUS_ROUTE,
-    structuralSignatures: [
-      "response.body:{compaction:{awaitingRooms:number;lastCompletedAt?:string;oldestOverdueMs:number;processingRooms:number;retryingRooms:number;staleLeases:number};current:{accumulatingRooms:number;caughtUpRooms:number;dueRooms:number;eligibleRooms:number;historicalCompletedRooms:number;historicalPendingRooms:number;oldestOverdueMs:number;processingRooms:number;rebuildingRooms:number;retryingRooms:number;staleLeases:number};generatedAt:string;health:\"degraded\"|\"delayed\"|\"healthy\";journal:{projectedBodyCodePointsMax?:number;projectedBodyCodePointsP50?:number;projectedBodyCodePointsP95?:number};last24h:{completedExtractionBatches:number;eventsWritten:number;extractionBatchesWithErrors:number;extractionDurationP50Ms?:number;extractionDurationP95Ms?:number;retriedExtractionBatches:number;zeroEventExtractionBatches:number};recentFailures:{attemptCount:number;errorCode:\"input_authority_unavailable\"|\"input_too_large\"|\"invalid_output\"|\"lease_lost\"|\"persistence\"|\"provider\"|\"provider_outcome_unknown\"|\"timeout\"|\"unknown\";modelId?:string;occurredAt:string;stage:\"compaction\"|\"extraction\"}[];window:{since:string;until:string}}",
-      "response.body:{error:string}",
-    ],
-    arbitraryPayloads: [],
-  },
 ];
 
 export function reviewedMemoryReviewDtoReplacements(
@@ -40,7 +23,7 @@ export function reviewedMemoryReviewDtoReplacements(
 ): readonly DtoDeclaration[] {
   return [
     ...declarations.filter((entry) =>
-      !REVIEWED_MEMORY_REVIEW_DTO_LOCATORS.has(entry.locator)
+      entry.locator !== RECOVERY_ROUTE
     ),
     ...REVIEWED_MEMORY_REVIEW_DTO_DECLARATIONS,
   ];

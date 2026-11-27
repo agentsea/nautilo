@@ -34,6 +34,7 @@ const TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION = [
   "public.foreground_memory_crypto_publication_receipts",
   "public.group_moderation_scopes",
   "public.message_deletion_receipts",
+  "public.memory_recovery_runs",
   "public.memory_review_model_recoveries",
   "public.moderation_actions",
   "public.moderation_restrictions",
@@ -44,6 +45,7 @@ const TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION = [
   "public.protected_task_execution_segment_receipts",
   "public.protected_task_run_output_bindings",
   "public.protected_task_wake_continuation_receipts",
+  "public.room_journal_model_recoveries",
   "public.server_admission",
   "public.server_moderation_policy",
   "public.server_provider_policy",
@@ -314,11 +316,11 @@ describe("migration inventory", () => {
     expect(inventory.missingSnapshotIndices).toContain(6);
     expect(inventory.missingSnapshotIndices).toContain(118);
     expect(inventory.latestSnapshotIndex).toBe(MIGRATION_TREE_BASELINE.tip);
-    expect(inventory.currentTables).toHaveLength(242);
+    expect(inventory.currentTables).toHaveLength(244);
     const currentTableLocators = new Set(
       inventory.currentTables.map((table) => table.locator),
     );
-    expect(TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION).toHaveLength(30);
+    expect(TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION).toHaveLength(32);
     for (const locator of TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION) {
       expect(currentTableLocators).toContain(locator);
     }
@@ -329,8 +331,8 @@ describe("migration inventory", () => {
       schema: "public",
       name: "session_messages",
     });
-    expect(inventory.currentColumns).toHaveLength(3318);
-    expect(inventory.currentConstraints).toHaveLength(938);
+    expect(inventory.currentColumns).toHaveLength(3348);
+    expect(inventory.currentConstraints).toHaveLength(943);
     expect(inventory.currentConstraints).toContainEqual({
       locator: "public.actors#foreign_key:actors_owner_id_users_id_fk",
       tableLocator: "public.actors",
@@ -342,7 +344,7 @@ describe("migration inventory", () => {
       onDelete: "cascade",
       onUpdate: "no action",
     });
-    expect(inventory.historicalCreatedTables).toHaveLength(258);
+    expect(inventory.historicalCreatedTables).toHaveLength(260);
     expect(inventory.historicalDroppedTables).toEqual([
       "public.collaboration_sessions",
       "public.grant_domain_envelope_acknowledgements",
@@ -531,12 +533,12 @@ describe("migration inventory", () => {
     ]);
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
-    expect(inventory.migrations.at(-1)).toEqual({
-      index: 391,
-      tag: "0391_memory_review_receipt_write_authority",
-      path: "0391_memory_review_receipt_write_authority.sql",
-      sha256: "1465d7c93e205323d6b61306a9d99e0b32f120930edb7b4661ebbc695d01da77",
-    });
+    expect(inventory.migrations.slice(391).map(({ path, sha256 }) => ({ path, sha256 }))).toEqual([
+      { path: "0391_memory_review_receipt_write_authority.sql", sha256: "1465d7c93e205323d6b61306a9d99e0b32f120930edb7b4661ebbc695d01da77" },
+      { path: "0392_flaky_spencer_smythe.sql", sha256: "22ffc8f0d9fc59c6c63386f395b240dd874d75c90f6f0adb783ee03e7427de56" },
+      { path: "0393_past_shocker.sql", sha256: "4129a4432c0e224827f8034921544dbc9faff127ebfbf676646c2f80e2b60007" },
+      { path: "0394_absurd_young_avengers.sql", sha256: "978a13f89a637a05ea1fbb05f83085c11038b5dbc7a6c88d327454bcce13574a" },
+    ]);
 
     const comparison = compareSchemaAndMigrationInventory(
       inventoryDrizzleSchema(nautiloSchema),
