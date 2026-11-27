@@ -868,6 +868,14 @@ export async function createProductionReflectionMemoryRuntime(
               return "unavailable";
             },
           },
+          inheritedSourceBindings: {
+            async resolve(dependency) {
+              const resolved = await bindings.evidence.resolveNamespace(
+                dependency.terminalAuthorityLeafHandle,
+              );
+              return resolved?.bindingRef ?? null;
+            },
+          },
           identity: createHmacOrganizerPublicationIdentityPort(input.commitmentKey),
           crossRoomFences: crossRoomPublicationPlanner,
           recordBindings: publicationBindings,

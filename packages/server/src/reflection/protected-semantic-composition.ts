@@ -911,6 +911,10 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
             publish: value => repository.publish(value), transitionLifecycle: value => gatePublication.transitionLifecycle(value)},
             sourceDependencies: {async validate(request) {const result = await sources.readExact({dependency: request.dependency, evidenceBindingRef: request.readBindingRef,
               ...(request.signal === undefined ? {} : {signal: request.signal}), returnedBytesMaximum: CROSS_ROOM_EXECUTION_PLAN_LIMITS.inputBytes}); return result.status === "available" ? "current" : "unavailable";}},
+            inheritedSourceBindings: {async resolve(dependency) {
+              const resolved = await bindings.evidence.resolveNamespace(dependency.terminalAuthorityLeafHandle);
+              return resolved?.bindingRef ?? null;
+            }},
             identity: createHmacOrganizerPublicationIdentityPort(input.commitmentKey), crossRoomFences: planner, recordBindings: publications,
             preserveExactPlanInvocationOrigin: true,
             room: {roomAnchorRef: binding.roomAnchorRef, terminalAuthorityLeafHandle: current.namespaceId,

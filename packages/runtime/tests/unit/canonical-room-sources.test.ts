@@ -46,6 +46,10 @@ function bindings() {
       bindingRef === BINDING ? { roomId: ROOM, namespaceId: NAMESPACE } : null,
     resolveRoom: async (roomId: string) =>
       roomId === ROOM ? { roomId: ROOM, namespaceId: NAMESPACE } : null,
+    resolveNamespace: async (namespaceId: string) =>
+      namespaceId === NAMESPACE
+        ? { roomId: ROOM, namespaceId: NAMESPACE, bindingRef: BINDING }
+        : null,
   };
 }
 

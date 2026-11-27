@@ -15,6 +15,7 @@ import {
   ORGANIZER_PUBLICATION_COMMITMENT_MAX_BYTES,
   OrganizerProposalPublisher,
   type OrganizerCrossRoomPublicationFencePort,
+  type OrganizerInheritedSourceBindingPort,
   type OrganizerProposalRepositoryPort,
   type OrganizerSourceDependencyValidationPort,
 } from "../../src/server";
@@ -178,6 +179,7 @@ function publisher(
     }> | null>;
   }>,
   preserveExactPlanInvocationOrigin = false,
+  inheritedSourceBindings?: OrganizerInheritedSourceBindingPort,
 ): OrganizerProposalPublisher {
   return new OrganizerProposalPublisher({
     repository,
@@ -188,6 +190,7 @@ function publisher(
     room: ROOM,
     ...(crossRoomFences === undefined ? {} : { crossRoomFences }),
     ...(recordBindings === undefined ? {} : { recordBindings }),
+    ...(inheritedSourceBindings === undefined ? {} : { inheritedSourceBindings }),
     ...(preserveExactPlanInvocationOrigin
       ? { preserveExactPlanInvocationOrigin: true }
       : {}),
@@ -1325,6 +1328,190 @@ describe("Organizer proposal publisher", () => {
 
     expect(result).toMatchObject({ status: "applied", operation: "create_parent" });
     expect(sourceReads).toEqual(["read:memory"]);
+  });
+
+  test("reopens inherited authored support through its canonical source origin", async () => {
+    const repository = new FixtureRepository();
+    const inherited = {
+      sourceKind: "memory/v1",
+      logicalSourceRef: "memory:inherited",
+      observedRevision: "2",
+      observedContentFingerprint: "sha256:inherited-2",
+      terminalAuthorityLeafHandle: "namespace:source",
+      authorityBearing: true,
+    } as const;
+    repository.records.set("record:changed", record("record:changed"));
+    repository.records.set("record:parent", record("record:parent", {
+      height: 1,
+      children: ["record:prior"],
+      sources: [inherited],
+    }));
+    repository.records.set("record:prior", record("record:prior"));
+    const idempotencyKey = "cross-room:inherited-source:1";
+    const plan = publicationPlan({
+      idempotencyKey,
+      inputs: [
+        plannedRecord({role: "changed", recordRef: "record:changed", namespaceRef: "namespace:alpha", readBindingRef: "read:changed"}),
+        plannedRecord({role: "candidate", recordRef: "record:parent", namespaceRef: "namespace:access", readBindingRef: "read:current-output"}),
+      ],
+    });
+    const sourceReads: string[] = [];
+    const result = await publisher(
+      repository,
+      async input => {
+        sourceReads.push(input.readBindingRef);
+        expect(input.dependency).toEqual(inherited);
+        return input.readBindingRef === "read:immutable-origin" ? "current" : "unavailable";
+      },
+      {revalidate: () => Promise.resolve({status: "current", predecessorAudience: "equal"})},
+      {
+        read: () => Promise.resolve(null),
+      },
+      false,
+      {
+        resolve: dependency => Promise.resolve(
+          dependency.logicalSourceRef === inherited.logicalSourceRef
+            && dependency.observedContentFingerprint
+              === inherited.observedContentFingerprint
+            ? "read:immutable-origin"
+            : null,
+        ),
+      },
+    ).apply({
+      proposal: {
+        operation: "extend_parent",
+        parentRecordRef: "record:parent",
+        statement: "The parent now also covers the changed Record.",
+        additionRecordRefs: ["record:changed"],
+        additionSourceDependencies: [],
+      },
+      publicationPlan: plan,
+      idempotencyKey,
+      changedRecordRef: "record:changed",
+      changeReason: "created",
+      budget,
+    });
+
+    expect(result).toMatchObject({status: "applied", operation: "extend_parent"});
+    expect(sourceReads).toEqual(["read:immutable-origin"]);
+    expect(repository.publications).toHaveLength(1);
+  });
+
+  test("does not infer an origin for inherited support without an exact fingerprint", async () => {
+    const repository = new FixtureRepository();
+    const inherited = {
+      sourceKind: "memory/v1",
+      logicalSourceRef: "memory:legacy",
+      observedRevision: "2",
+      terminalAuthorityLeafHandle: "namespace:source",
+      authorityBearing: true,
+    } as const;
+    repository.records.set("record:changed", record("record:changed"));
+    repository.records.set("record:parent", record("record:parent", {
+      height: 1,
+      children: ["record:prior"],
+      sources: [inherited],
+    }));
+    repository.records.set("record:prior", record("record:prior"));
+    let originReads = 0;
+    let sourceReads = 0;
+    const idempotencyKey = "cross-room:unfingerprinted-source:1";
+    const result = await publisher(
+      repository,
+      () => {
+        sourceReads += 1;
+        return Promise.resolve("current");
+      },
+      {revalidate: () => Promise.resolve({status: "current", predecessorAudience: "equal"})},
+      {
+        read: () => Promise.resolve(null),
+      },
+      false,
+      {
+        resolve: () => {
+          originReads += 1;
+          return Promise.resolve("read:immutable-origin");
+        },
+      },
+    ).apply({
+      proposal: {
+        operation: "extend_parent",
+        parentRecordRef: "record:parent",
+        statement: "The parent now also covers the changed Record.",
+        additionRecordRefs: ["record:changed"],
+        additionSourceDependencies: [],
+      },
+      publicationPlan: publicationPlan({
+        idempotencyKey,
+        inputs: [
+          plannedRecord({role: "changed", recordRef: "record:changed", namespaceRef: "namespace:alpha", readBindingRef: "read:changed"}),
+          plannedRecord({role: "candidate", recordRef: "record:parent", namespaceRef: "namespace:access", readBindingRef: "read:current-output"}),
+        ],
+      }),
+      idempotencyKey,
+      changedRecordRef: "record:changed",
+      changeReason: "created",
+      budget,
+    });
+
+    expect(result).toMatchObject({
+      status: "unavailable",
+      failureDetail: "publication_validation_unavailable",
+    });
+    expect(originReads).toBe(0);
+    expect(sourceReads).toBe(0);
+    expect(repository.publications).toHaveLength(0);
+
+    repository.records.set("record:parent", record("record:parent", {
+      height: 1,
+      children: ["record:prior"],
+      sources: [{
+        ...inherited,
+        observedContentFingerprint: "sha256:legacy-2",
+      }],
+    }));
+    const missingBinding = await publisher(
+      repository,
+      () => {
+        sourceReads += 1;
+        return Promise.resolve("current");
+      },
+      {revalidate: () => Promise.resolve({status: "current", predecessorAudience: "equal"})},
+      {read: () => Promise.resolve(null)},
+      false,
+      {
+        resolve: () => {
+          originReads += 1;
+          return Promise.resolve(null);
+        },
+      },
+    ).apply({
+      proposal: {
+        operation: "extend_parent",
+        parentRecordRef: "record:parent",
+        statement: "The parent now also covers the changed Record.",
+        additionRecordRefs: ["record:changed"],
+        additionSourceDependencies: [],
+      },
+      publicationPlan: publicationPlan({
+        idempotencyKey: "cross-room:missing-inherited-binding:1",
+        inputs: [
+          plannedRecord({role: "changed", recordRef: "record:changed", namespaceRef: "namespace:alpha", readBindingRef: "read:changed"}),
+          plannedRecord({role: "candidate", recordRef: "record:parent", namespaceRef: "namespace:access", readBindingRef: "read:current-output"}),
+        ],
+      }),
+      idempotencyKey: "cross-room:missing-inherited-binding:1",
+      changedRecordRef: "record:changed",
+      changeReason: "created",
+      budget,
+    });
+    expect(missingBinding).toMatchObject({
+      status: "unavailable",
+      failureDetail: "publication_validation_unavailable",
+    });
+    expect(originReads).toBe(1);
+    // A missing authority-owned binding is not evidence that the source changed.
+    expect(sourceReads).toBe(0);
   });
 
   test("persists complete uncited Record and source exposure as authority provenance", async () => {

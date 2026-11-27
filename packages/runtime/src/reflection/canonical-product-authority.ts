@@ -47,6 +47,11 @@ export interface CanonicalRoomEvidenceBindingPort {
     roomId: string;
     namespaceId: string;
   }> | null>;
+  resolveNamespace(namespaceId: string): Promise<Readonly<{
+    roomId: string;
+    namespaceId: string;
+    bindingRef: string;
+  }> | null>;
 }
 
 /** Metadata-only origin binding for a question whose content is already open. */
@@ -259,6 +264,22 @@ export function createCanonicalSameRoomBindingPorts(input: Readonly<{
     async resolveRoom(roomId) {
       const access = await roomQueries.getRoomWithAccess(roomId);
       return access === null || access.externalContext === true ? null : { roomId, namespaceId: access.namespaceId };
+    },
+    async resolveNamespace(namespaceId) {
+      const normalized = namespaceId.toLowerCase();
+      const room = await roomQueries.findRoomByNamespaceId(normalized);
+      if (room === null) return null;
+      const access = await roomQueries.getRoomWithAccess(room.roomId);
+      if (
+        access === null
+        || access.externalContext === true
+        || access.namespaceId.toLowerCase() !== normalized
+      ) return null;
+      return {
+        roomId: room.roomId,
+        namespaceId: normalized,
+        bindingRef: `journal:namespace:${normalized}:${input.selection.selectedRepresentation}:v${input.selection.migrationGeneration}`,
+      };
     },
   };
   const invocation: CanonicalRoomInvocationBindingPort = {
