@@ -603,19 +603,22 @@ async function tryLockSemanticWorkAdmission(
   return rows[0]?.locked === true;
 }
 
+type SemanticWorkAdmissionInput = Readonly<{
+  recordRef: string;
+  changeReason: SemanticChangeReason;
+  admissionCommitment: Uint8Array;
+  now: Date;
+  notBefore?: Date;
+}>;
+
 /**
  * Exact, transaction-neutral admission primitive. The immutable receipt makes
  * replays no-ops even after later first-seen changes advanced the work row.
  */
-export async function admitSemanticWorkWithinTransaction(
+async function admitSerializedSemanticWorkWithinTransaction(
   tx: RecordProductPostgresExecutor,
-  input: Readonly<{
-    recordRef: string;
-    changeReason: SemanticChangeReason;
-    admissionCommitment: Uint8Array;
-    now: Date;
-    notBefore?: Date;
-  }>,
+  input: SemanticWorkAdmissionInput,
+  existingWorkRowLocked: boolean,
 ): Promise<Readonly<{ admitted: boolean; generation: number }>> {
   assertOpaque(input.recordRef, "Record reference");
   assertReason(input.changeReason);
@@ -630,7 +633,9 @@ export async function admitSemanticWorkWithinTransaction(
   ) {
     throw new RangeError("semantic work timestamps must be valid and not-before cannot precede admission");
   }
-  await lockSemanticWorkAdmission(tx, input.recordRef);
+  if (!existingWorkRowLocked) {
+    await lockSemanticWorkAdmission(tx, input.recordRef);
+  }
   const receipt = await executeTypedRecordProductQuery(tx,
     recordProductTypedDb.select({
       assigned_generation: reflectionRecordSemanticWorkAdmissions.assignedGeneration,
@@ -742,6 +747,13 @@ export async function admitSemanticWorkWithinTransaction(
   return { admitted: true, generation };
 }
 
+export function admitSemanticWorkWithinTransaction(
+  tx: RecordProductPostgresExecutor,
+  input: SemanticWorkAdmissionInput,
+): Promise<Readonly<{ admitted: boolean; generation: number }>> {
+  return admitSerializedSemanticWorkWithinTransaction(tx, input, false);
+}
+
 /** Install exact protected-mode reverse lookup without persisting source IDs. */
 export async function indexSemanticSourceDependenciesWithinTransaction(
   tx: RecordProductPostgresExecutor,
@@ -840,6 +852,20 @@ export function reflectionManualRecoveryFamilyKey(input: Readonly<{
     : `legacy-record:${input.recordRef}`;
 }
 
+function manualRecoveryLockFamilyKeys(input: Readonly<{
+  recordRef: string;
+  binding: unknown;
+  recoveryId: unknown;
+}>): readonly string[] {
+  const keys: string[] = [];
+  if (typeof input.recoveryId === "string") {
+    keys.push(`recovery:${input.recoveryId}`);
+  }
+  const operation = reflectionManualRecoveryFamilyKey(input);
+  if (operation !== null) keys.push(`binding:${operation}`);
+  return keys.sort((left, right) => left.localeCompare(right));
+}
+
 export class PostgresSemanticWorkStore
   implements DurableSleepWorkPort, RecordSemanticPublicationPort {
   readonly #clock: () => Date;
@@ -892,7 +918,7 @@ export class PostgresSemanticWorkStore
     }
     return this.options.handle.transaction(async tx => {
       const work = reflectionRecordSemanticWork;
-      const held = await executeTypedRecordProductQuery(tx,
+      const candidates = await executeTypedRecordProductQuery(tx,
         recordProductTypedDb.select({
           record_id: work.recordId,
           generation: work.generation,
@@ -924,9 +950,87 @@ export class PostgresSemanticWorkStore
               eq(work.state, "quarantined"),
             ),
           ))
+          .orderBy(asc(work.recordId)));
+      if (candidates.length === 0) return { queued: 0, held: 0 };
+
+      // This method can share a surrounding server transaction with derived
+      // lineage repair, which has already written (and therefore row-locked)
+      // other work Records. Lock only immediately available existing rows: no
+      // advisory lock is needed because every recovery receipt is unique and
+      // the existing work row serializes its generation. This avoids both
+      // row/advisory inversion and advisory-lock growth with backlog size.
+      const candidateRecordRefs = candidates.map(row => row.record_id);
+      const locked = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: work.recordId,
+          generation: work.generation,
+          completed_generation: work.completedGeneration,
+          change_reason: work.changeReason,
+          stage: work.stage,
+          accepted_model_binding: work.acceptedModelBinding,
+          accepted_model_binding_generation: work.acceptedModelBindingGeneration,
+          organizer_proposal_checkpoint: work.organizerProposalCheckpoint,
+          manual_recovery_id: work.manualRecoveryId,
+          manual_recovery_source_generation: work.manualRecoverySourceGeneration,
+          manual_recovery_service_model_id: work.manualRecoveryServiceModelId,
+          manual_recovery_spent_at: work.manualRecoverySpentAt,
+          state: work.state,
+          completion_outcome: work.completionOutcome,
+          failure_code: work.failureCode,
+          failure_detail: work.failureDetail,
+          lifecycle: reflectionRecords.lifecycle,
+          disposition: reflectionRecords.disposition,
+        }).from(work)
+          .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+          .where(and(
+            inArray(work.recordId, candidateRecordRefs),
+            lte(work.updatedAt, input.observedThrough),
+            or(
+              and(
+                eq(work.state, "complete"),
+                eq(work.completionOutcome, "provider_outcome_unknown"),
+              ),
+              eq(work.state, "quarantined"),
+            ),
+          ))
           .orderBy(asc(work.recordId))
-          .for("update", { of: work }));
-      if (held.length === 0) return { queued: 0, held: 0 };
+          .for("update", { of: work, skipLocked: true }));
+      if (locked.length === 0) {
+        return { queued: 0, held: candidates.length };
+      }
+
+      // A paid operation can span multiple Records. If row contention skipped
+      // any candidate member, leave every member of that observed family held
+      // so a later request cannot split one shared provider result into
+      // independently billable recovery generations.
+      const candidateFamiliesByRecord = new Map(candidates.map(row => [
+        row.record_id,
+        manualRecoveryLockFamilyKeys({
+          recordRef: row.record_id,
+          binding: row.accepted_model_binding,
+          recoveryId: row.manual_recovery_id,
+        }),
+      ]));
+      const lockedRecordRefs = new Set(locked.map(row => row.record_id));
+      const incompleteFamilies = new Set<string>();
+      for (const row of candidates) {
+        if (!lockedRecordRefs.has(row.record_id)) {
+          for (const familyKey of candidateFamiliesByRecord.get(row.record_id) ?? []) {
+            incompleteFamilies.add(familyKey);
+          }
+        }
+      }
+      const held = locked.filter(row => {
+        const candidateFamilyKeys = candidateFamiliesByRecord.get(row.record_id) ?? [];
+        const lockedFamilyKeys = manualRecoveryLockFamilyKeys({
+          recordRef: row.record_id,
+          binding: row.accepted_model_binding,
+          recoveryId: row.manual_recovery_id,
+        });
+        return JSON.stringify(candidateFamilyKeys) === JSON.stringify(lockedFamilyKeys)
+          && lockedFamilyKeys.every(familyKey => !incompleteFamilies.has(familyKey));
+      });
+      if (held.length === 0) return { queued: 0, held: candidates.length };
 
       const recordRefs = held.map(row => row.record_id);
       const unsafePublications = await executeTypedRecordProductQuery(tx,
@@ -1066,7 +1170,7 @@ export class PostgresSemanticWorkStore
           const sourceGeneration = row.generation;
           const changeReason = row.change_reason;
           assertReason(changeReason);
-          const admitted = await admitSemanticWorkWithinTransaction(tx, {
+          const admitted = await admitSerializedSemanticWorkWithinTransaction(tx, {
             recordRef,
             changeReason,
             admissionCommitment: this.options.commitments.manualRecovery({
@@ -1077,7 +1181,7 @@ export class PostgresSemanticWorkStore
               observedThrough: input.observedThrough,
             }),
             now: input.now,
-          });
+          }, true);
           if (!admitted.admitted || admitted.generation !== sourceGeneration + 1) {
             throw new Error("Reflection manual recovery admission lost its generation fence");
           }
@@ -1102,7 +1206,7 @@ export class PostgresSemanticWorkStore
           queued += 1;
         }
       }
-      return { queued, held: held.length - queued };
+      return { queued, held: candidates.length - queued };
     }, { isolationLevel: "read committed" });
   }
 
@@ -2749,7 +2853,10 @@ export class PostgresSemanticWorkStore
           && authorization.manual_recovery_spent_at === null
           && authorization.organizer_proposal_checkpoint !== null;
         if (conditionallyAuthorized) {
-          const admitted = await admitSemanticWorkWithinTransaction(tx, {
+          // The conditional SELECT already holds the existing work row. Its
+          // unique recovery receipt can advance under that row lock without
+          // taking an advisory lock after the fact.
+          const admitted = await admitSerializedSemanticWorkWithinTransaction(tx, {
             recordRef: input.claim.recordRef,
             changeReason: input.claim.changeReason,
             admissionCommitment: this.options.commitments.manualRecovery({
@@ -2760,7 +2867,7 @@ export class PostgresSemanticWorkStore
               observedThrough,
             }),
             now,
-          });
+          }, true);
           if (!admitted.admitted || admitted.generation !== input.claim.generation + 1) {
             throw new Error("Reflection conditional recovery lost its generation fence");
           }

@@ -94,6 +94,58 @@ async function verifiedConnection(
 }
 
 describe("PostgreSQL semantic work commitments and admission", () => {
+  test("keeps a contended manual recovery family held without advisory locks", async () => {
+    const now = new Date("2026-11-27T10:05:00.000Z");
+    const observedThrough = new Date(now.getTime() - 1_000);
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("from reflection_record_semantic_work inner join reflection_records")) {
+        const binding = {
+          version: 1,
+          kind: "service",
+          role: "memoryReflection",
+          modelId: "surplus:synthetic-model",
+          inputCommitment: `hmac-sha256:${"W".repeat(43)}`,
+        };
+        const rows = [
+          { record_id: "record:a", accepted_model_binding: binding },
+          { record_id: "record:b", accepted_model_binding: binding },
+          {
+            record_id: "record:c",
+            accepted_model_binding: null,
+            manual_recovery_id: "11111111-1111-4111-8111-111111111111",
+          },
+          {
+            record_id: "record:d",
+            accepted_model_binding: null,
+            manual_recovery_id: "11111111-1111-4111-8111-111111111111",
+          },
+        ];
+        return (normalized.includes("for update") ? [rows[0], rows[2]] : rows) as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(25)),
+      clock: () => now,
+    });
+
+    expect(await store.requestManualProviderRecovery({
+      now,
+      observedThrough,
+      authorizedBy: "operator:one",
+      modelId: "surplus:synthetic-model",
+    })).toEqual({ queued: 0, held: 4 });
+    expect(normalizedSql(value.queries[0]!.statement)).not.toContain("for update");
+    expect(normalizedSql(value.queries[1]!.statement)).toContain(
+      "for update of reflection_record_semantic_work skip locked",
+    );
+    expect(value.queries.every(query => !query.statement.includes("pg_advisory"))).toBeTrue();
+  });
+
   test("cohorts exact service operations but isolates legacy service rows", () => {
     const binding = {
       version: 1 as const,
@@ -1692,6 +1744,9 @@ describe("PostgreSQL semantic work leases", () => {
     expect(statement).toContain("organizer_proposal_resumed_at =");
     expect(statement).toContain("recovery_policy_version =");
     expect(query?.parameters).toContain("publication_plan_stale");
+    expect(normalizedSql(value.queries[0]!.statement)).toContain("for update");
+    expect(value.queries.every(candidate => !candidate.statement.includes("pg_advisory")))
+      .toBeTrue();
   });
 
   test.each([
