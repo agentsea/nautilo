@@ -53,6 +53,7 @@ test("manual Reflection recovery queues each observed service hold once and reta
 
   const recordIds = {
     direct: `manual-reflection-${suffix}-direct`,
+    preBindingHold: `manual-reflection-${suffix}-pre-binding`,
     legacy: `manual-reflection-${suffix}-legacy`,
     human: `manual-reflection-${suffix}-human`,
     newer: `manual-reflection-${suffix}-newer`,
@@ -268,11 +269,11 @@ test("manual Reflection recovery queues each observed service hold once and reta
       metadata: { operationId: reflectionModelOperationId(serviceBinding, "primary") },
     }))).returning({ id: llmUsageEvents.id })).map(row => row.id);
 
-    const request = (cutoff: Date) => createPostgresJsCanonicalBridgeConnection(db)
+    const request = (cutoff: Date, requestAt = now) => createPostgresJsCanonicalBridgeConnection(db)
       .transaction((tx, executor) => requestManualReflectionRecovery({
         db: tx,
         executor,
-        now,
+        now: requestAt,
         observedThrough: cutoff,
         authorizedBy: operator.id,
         modelId: configuredModel,
@@ -460,6 +461,33 @@ test("manual Reflection recovery queues each observed service hold once and reta
       reflectionRecordSemanticWork.recordId,
       recordIds.staleCheckpointQuarantine,
     )))[0]?.generation).toBe(2);
+
+    // A pre-binding failure may resume the original unspent authorization.
+    // The same observation cannot issue a new grant or reset a spent one.
+    const preBindingFailureAt = new Date(rolledOver!.updatedAt.getTime() + 30_000);
+    const retryAt = new Date(preBindingFailureAt.getTime() + 1_000);
+    const subject = eq(reflectionRecordSemanticWork.recordId, recordIds.preBindingHold);
+    await db.insert(reflectionRecordSemanticWork).values({
+      ...rolledOver!,
+      recordId: recordIds.preBindingHold,
+      stage: "organization", state: "quarantined", quarantineRound: 1,
+      failureCode: "unexpected_failure", failureDetail: "unexpected_model_invocation_failure",
+      nextAttemptAt: null, recoverAfter, updatedAt: preBindingFailureAt,
+    });
+    await request(preBindingFailureAt, retryAt);
+    const [rearmed] = await db.select().from(reflectionRecordSemanticWork).where(subject);
+    expect(rearmed).toMatchObject({
+      generation: 2, state: "quarantined", recoverAfter: retryAt,
+      manualRecoveryId: conditionalRecoveryId, manualRecoverySourceGeneration: 1,
+      manualRecoveryObservedThrough: observedThrough, manualRecoverySpentAt: null,
+      acceptedModelBinding: null,
+    });
+    await db.update(reflectionRecordSemanticWork).set({
+      manualRecoverySpentAt: retryAt, recoverAfter, updatedAt: retryAt,
+    }).where(subject);
+    await request(retryAt, new Date(retryAt.getTime() + 1_000));
+    const [spent] = await db.select().from(reflectionRecordSemanticWork).where(subject);
+    expect(spent).toMatchObject({ generation: 2, recoverAfter, manualRecoverySpentAt: retryAt });
   } finally {
     if (usageIds.length > 0) {
       await db.delete(llmUsageEvents).where(inArray(llmUsageEvents.id, usageIds));

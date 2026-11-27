@@ -883,6 +883,10 @@ export class PostgresSemanticWorkStore
           accepted_model_binding: work.acceptedModelBinding,
           accepted_model_binding_generation: work.acceptedModelBindingGeneration,
           organizer_proposal_checkpoint: work.organizerProposalCheckpoint,
+          manual_recovery_id: work.manualRecoveryId,
+          manual_recovery_source_generation: work.manualRecoverySourceGeneration,
+          manual_recovery_service_model_id: work.manualRecoveryServiceModelId,
+          manual_recovery_spent_at: work.manualRecoverySpentAt,
           state: work.state,
           completion_outcome: work.completionOutcome,
           failure_code: work.failureCode,
@@ -931,6 +935,17 @@ export class PostgresSemanticWorkStore
         const recordRef = row.record_id;
         const generation = row.generation;
         if (row.state === "quarantined") {
+          // The original operator grant is still available if the failure
+          // happened before the worker even bound a model. Keep its identity,
+          // generation, model and single-spend fence when making it due again.
+          const unspentAdmission = row.failure_code === "unexpected_failure"
+            && row.failure_detail === "unexpected_model_invocation_failure"
+            && row.manual_recovery_id != null
+            && row.manual_recovery_source_generation === generation - 1
+            && row.manual_recovery_service_model_id === input.modelId
+            && row.manual_recovery_spent_at === null
+            && row.accepted_model_binding === null
+            && row.organizer_proposal_checkpoint === null;
           const retryable = row.lifecycle === "current"
             && row.disposition === "available"
             && !unsafeRecords.has(recordRef)
@@ -939,7 +954,7 @@ export class PostgresSemanticWorkStore
             // deterministic evidence and cannot be repaired by reclaiming the
             // same generation, so it remains held.
             && (
-              row.failure_code === "authority_unavailable"
+              unspentAdmission || row.failure_code === "authority_unavailable"
               || (
                 row.failure_code === "publication_unavailable"
                 && [
@@ -1018,16 +1033,10 @@ export class PostgresSemanticWorkStore
             eq(work.generation, row.generation),
             eq(work.state, "quarantined"),
             lte(work.updatedAt, input.observedThrough),
-            row.failure_code === "authority_unavailable"
-              ? eq(work.failureCode, "authority_unavailable")
-              : and(
-                eq(work.failureCode, "publication_unavailable"),
-                inArray(work.failureDetail, [
-                  "publication_plan_stale",
-                  "publication_source_unavailable",
-                ]),
-                sql`${work.organizerProposalCheckpoint} is not null`,
-              ),
+            eq(work.failureCode, row.failure_code!),
+            row.failure_detail === null
+              ? isNull(work.failureDetail)
+              : eq(work.failureDetail, row.failure_detail),
           )).returning({ record_id: work.recordId }));
         if (retried.length === 1) queued += 1;
       }
