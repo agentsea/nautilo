@@ -89,6 +89,29 @@ describe("MemoryRecoveryCard", () => {
     expect(view.getAllByText("Needs attention")).toHaveLength(1);
   });
 
+  test("resumes an unavailable processor with the original authorization after a reload", async () => {
+    capabilities.add("manage_server_operations");
+    const partial: MemoryRecoveryRun = { ...receipt, reflection: { state: "unavailable" } };
+    latest.mockResolvedValueOnce({ run: partial }).mockResolvedValueOnce({ run: receipt });
+    const view = show();
+    await waitFor(() => expect(view.getByRole("status").textContent).toContain("resume this request"));
+    fireEvent.click(view.getByRole("button", { name: "Recover all memory" }));
+    await waitFor(() => expect(view.getByRole("status").textContent).toContain("8 queued · 1 held"));
+    expect(recover.mock.calls).toEqual([[partial.requestId]]);
+  });
+
+  test("waits for the last receipt before allowing a fresh authorization", async () => {
+    capabilities.add("manage_server_operations");
+    latest.mockRejectedValueOnce(new Error("temporarily unavailable"));
+    const view = show();
+    await waitFor(() => expect(view.getByRole("alert").textContent).toContain("last recovery request"));
+    const action = view.getByRole("button", { name: "Recover all memory" });
+    fireEvent.click(action);
+    expect(recover).not.toHaveBeenCalled();
+    fireEvent.click(view.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(action.hasAttribute("disabled")).toBe(false));
+  });
+
   test("one operator click covers every processor and retries a lost response with the same request", async () => {
     capabilities.add("manage_server_operations");
     recover.mockRejectedValueOnce(new Error("disconnected"));

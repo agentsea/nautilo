@@ -131,7 +131,7 @@ function ProcessorRow({ name, href, summary }: { name: string; href: string; sum
 function admissionText(lane: MemoryRecoveryLaneResult | null): string {
   if (lane === null) return "Request in progress";
   if (lane.state === "paused") return "Paused by server policy";
-  if (lane.state === "unavailable") return "Could not assess this processor";
+  if (lane.state === "unavailable") return "Could not assess this processor. Press Recover all memory to resume this request.";
   const admission = lane.queued || lane.held
     ? `${lane.queued.toLocaleString()} queued · ${lane.held.toLocaleString()} held at request`
     : "No work needed a retry";
@@ -158,6 +158,7 @@ export function MemoryRecoveryCard() {
   const [summaries, setSummaries] = useState<Record<string, RecoverySummary | null>>({ stenographer: null, reflection: null, memory: null });
   const [loading, setLoading] = useState(canRead);
   const [running, setRunning] = useState(false);
+  const [receiptKnown, setReceiptKnown] = useState(false);
   const [run, setRun] = useState<MemoryRecoveryRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pendingRequest = useRef<string | null>(null);
@@ -175,7 +176,10 @@ export function MemoryRecoveryCard() {
       apiClient.admin.memoryRecovery.latest(),
     ]);
     if (sequence !== refreshSequence.current) return;
-    if (receipt.status === "fulfilled") setRun(receipt.value.run);
+    if (receipt.status === "fulfilled") {
+      setRun(receipt.value.run);
+      setReceiptKnown(true);
+    }
     setSummaries({
       stenographer: stenographer.status === "fulfilled" ? {
         ...summarizeStenographer(stenographer.value),
@@ -201,11 +205,11 @@ export function MemoryRecoveryCard() {
     return () => window.clearInterval(poll);
   }, [canRead, hasRun, refresh]);
   async function recover() {
-    if (!canManage || submitting.current) return;
+    if (!canManage || !receiptKnown || submitting.current) return;
     submitting.current = true;
     setRunning(true);
     setError(null);
-    const unfinished = run && [run.stenographer, run.reflection, run.memory].some(lane => lane === null);
+    const unfinished = run && [run.stenographer, run.reflection, run.memory].some(lane => lane === null || lane.state === "unavailable");
     const requestId = pendingRequest.current ?? (unfinished ? run.requestId : crypto.randomUUID());
     pendingRequest.current = requestId;
     try {
@@ -232,10 +236,11 @@ export function MemoryRecoveryCard() {
         </div>
         <div className="flex gap-2">
           <button className={buttonClass} type="button" disabled={loading || running} onClick={() => void refresh()}>{loading ? "Refreshing…" : "Refresh"}</button>
-          {canManage ? <button className={`${buttonClass} border-primary text-primary`} type="button" disabled={running}
+          {canManage ? <button className={`${buttonClass} border-primary text-primary`} type="button" disabled={running || !receiptKnown}
             aria-describedby="memory-recovery-cost" onClick={() => void recover()}>{running ? "Starting recovery…" : "Recover all memory"}</button> : null}
         </div>
       </div>
+      {canManage && !loading && !receiptKnown ? <p role="alert" className="mt-3 text-xs text-error">Refresh to load the last recovery request before starting another.</p> : null}
       {error ? <p role="alert" className="mt-3 text-xs text-error">{error}</p> : null}
       {run ? <div role="status" className="mt-3 text-xs">
         <p className="font-semibold">Last recovery request · {new Date(run.observedThrough).toLocaleString()}</p>
