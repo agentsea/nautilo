@@ -8,11 +8,14 @@ import {
   gt,
   inArray,
   isNull,
+  lte,
   ne,
   or,
   reflectionRecordDependencies,
   reflectionRecordAuthorityDependencies,
+  reflectionRecordAuthorityReconciliations,
   reflectionRecordDependencyChangeRepairs,
+  reflectionRecordPublications,
   reflectionRecordSemanticWork,
   reflectionRecordSemanticWorkAdmissions,
   reflectionRecordSearchProjections,
@@ -96,6 +99,13 @@ type SemanticChangeReason = DurableSleepClaim["changeReason"];
 export interface RecordSemanticCommitmentPort {
   modelBinding(input: Readonly<{
     binding: MemoryOperationBinding;
+  }>): Uint8Array;
+  manualRecovery(input: Readonly<{
+    recordRef: string;
+    sourceGeneration: number;
+    recoveryId: string;
+    authorizedBy: string;
+    observedThrough: Date;
   }>): Uint8Array;
   sourceDependency(input: Pick<
     DurableSourceDependency,
@@ -195,6 +205,28 @@ export function createHmacRecordSemanticCommitmentPort(
         ownedKey,
         "nautilo/reflection/model-batch-family/v1",
         [JSON.stringify(binding)],
+      );
+    },
+    manualRecovery(input) {
+      assertOpaque(input.recordRef, "manual recovery Record reference");
+      assertOpaque(input.recoveryId, "manual recovery identity");
+      assertOpaque(input.authorizedBy, "manual recovery authorizer");
+      if (!Number.isSafeInteger(input.sourceGeneration) || input.sourceGeneration < 1) {
+        throw new RangeError("manual recovery source generation must be positive");
+      }
+      if (!Number.isFinite(input.observedThrough.getTime())) {
+        throw new TypeError("manual recovery observation cutoff must be valid");
+      }
+      return semanticHmac(
+        ownedKey,
+        "nautilo/reflection/manual-provider-recovery/v1",
+        [
+          input.recordRef,
+          String(input.sourceGeneration),
+          input.recoveryId,
+          input.authorizedBy,
+          input.observedThrough.toISOString(),
+        ],
       );
     },
     sourceDependency(input: Pick<
@@ -672,6 +704,13 @@ export async function admitSemanticWorkWithinTransaction(
         ordinaryFallbackReason: null,
         acceptedModelBinding: null,
         acceptedModelBindingGeneration: null,
+        manualRecoveryId: null,
+        manualRecoverySourceGeneration: null,
+        manualRecoveryAuthorizedBy: null,
+        manualRecoveryAuthorizedAt: null,
+        manualRecoveryObservedThrough: null,
+        manualRecoveryServiceModelId: null,
+        manualRecoverySpentAt: null,
         organizerProposalCheckpoint: null,
         organizerProposalResumedAt: null,
         dueSince: sql`greatest(${reflectionRecordSemanticWork.dueSince}, ${input.now})`,
@@ -748,6 +787,40 @@ export interface SemanticSourceRepairDrainResult {
   readonly pending: boolean;
 }
 
+type ManualRecoveryServiceBinding =
+  | Extract<MemoryOperationBinding, { kind: "service" }>
+  | Readonly<{ kind: "service"; modelId: string }>;
+
+function manualRecoveryServiceBinding(value: unknown): ManualRecoveryServiceBinding | null {
+  try {
+    const binding = parseMemoryOperationBinding(value);
+    return binding.kind === "service" && binding.role === "memoryReflection"
+      ? binding
+      : null;
+  } catch {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const row = value as Record<string, unknown>;
+    return row["kind"] === "service"
+      && typeof row["modelId"] === "string"
+      && row["modelId"].trim() === row["modelId"]
+      && row["modelId"].length > 0
+      && Object.keys(row).length === 2
+      ? { kind: "service", modelId: row["modelId"] }
+      : null;
+  }
+}
+
+export function reflectionManualRecoveryFamilyKey(input: Readonly<{
+  recordRef: string;
+  binding: unknown;
+}>): string | null {
+  const binding = manualRecoveryServiceBinding(input.binding);
+  if (binding === null) return null;
+  return "version" in binding
+    ? `operation:${JSON.stringify(binding)}`
+    : `legacy-record:${input.recordRef}`;
+}
+
 export class PostgresSemanticWorkStore
   implements DurableSleepWorkPort, RecordSemanticPublicationPort {
   readonly #clock: () => Date;
@@ -773,6 +846,186 @@ export class PostgresSemanticWorkStore
     if (!Number.isSafeInteger(this.#retryMilliseconds) || this.#retryMilliseconds < 1) {
       throw new RangeError("semantic work retry must be a positive integer of milliseconds");
     }
+  }
+
+  /**
+   * Admit one fresh, operator-authorized generation for each currently held
+   * service-funded Reflection subject observed by the caller. The next worker
+   * claim still reopens canonical source authority and derives a new keyed
+   * input commitment before provider dispatch. Human-funded work is excluded:
+   * server-operations authority cannot spend a Human's provider account.
+   */
+  requestManualProviderRecovery(input: Readonly<{
+    now: Date;
+    observedThrough: Date;
+    authorizedBy: string;
+    modelId: string;
+  }>): Promise<Readonly<{ queued: number; held: number }>> {
+    const nowMs = input.now.getTime();
+    const observedThroughMs = input.observedThrough.getTime();
+    if (!Number.isFinite(nowMs) || !Number.isFinite(observedThroughMs)
+      || observedThroughMs >= nowMs) {
+      throw new RangeError("Reflection recovery timestamps are invalid");
+    }
+    assertOpaque(input.authorizedBy, "Reflection recovery authorizer");
+    if (!input.modelId || input.modelId.trim() !== input.modelId) {
+      throw new TypeError("Reflection recovery model must be non-empty and trimmed");
+    }
+    return this.options.handle.transaction(async tx => {
+      const work = reflectionRecordSemanticWork;
+      const held = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: work.recordId,
+          generation: work.generation,
+          completed_generation: work.completedGeneration,
+          change_reason: work.changeReason,
+          stage: work.stage,
+          accepted_model_binding: work.acceptedModelBinding,
+          accepted_model_binding_generation: work.acceptedModelBindingGeneration,
+          organizer_proposal_checkpoint: work.organizerProposalCheckpoint,
+          state: work.state,
+          completion_outcome: work.completionOutcome,
+          failure_code: work.failureCode,
+          failure_detail: work.failureDetail,
+          lifecycle: reflectionRecords.lifecycle,
+          disposition: reflectionRecords.disposition,
+        }).from(work)
+          .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+          .where(and(
+            lte(work.updatedAt, input.observedThrough),
+            or(
+              and(
+                eq(work.state, "complete"),
+                eq(work.completionOutcome, "provider_outcome_unknown"),
+              ),
+              eq(work.state, "quarantined"),
+            ),
+          ))
+          .orderBy(asc(work.recordId))
+          .for("update", { of: work }));
+      if (held.length === 0) return { queued: 0, held: 0 };
+
+      const recordRefs = held.map(row => row.record_id);
+      const unsafePublications = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({ record_id: reflectionRecordPublications.recordId })
+          .from(reflectionRecordPublications)
+          .where(and(
+            inArray(reflectionRecordPublications.recordId, recordRefs),
+            ne(reflectionRecordPublications.state, "complete"),
+          )));
+      const unsafeAuthority = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({ record_id: reflectionRecordAuthorityReconciliations.recordId })
+          .from(reflectionRecordAuthorityReconciliations)
+          .where(and(
+            inArray(reflectionRecordAuthorityReconciliations.recordId, recordRefs),
+            ne(reflectionRecordAuthorityReconciliations.state, "complete"),
+          )));
+      const unsafeRecords = new Set([
+        ...unsafePublications.map(row => row.record_id),
+        ...unsafeAuthority.map(row => row.record_id),
+      ]);
+
+      const families = new Map<string, Array<(typeof held)[number]>>();
+      const retryableQuarantines: Array<(typeof held)[number]> = [];
+      for (const row of held) {
+        const recordRef = row.record_id;
+        const generation = row.generation;
+        if (row.state === "quarantined") {
+          const retryable = row.lifecycle === "current"
+            && row.disposition === "available"
+            && (
+              row.failure_code === "authority_unavailable"
+              || (
+                row.failure_code === "candidate_unavailable"
+                && row.failure_detail === "candidate_selection_invalid"
+              )
+            );
+          if (retryable) retryableQuarantines.push(row);
+          continue;
+        }
+        const familyKey = reflectionManualRecoveryFamilyKey({
+          recordRef,
+          binding: row.accepted_model_binding,
+        });
+        const safe = familyKey !== null
+          && row.lifecycle === "current"
+          && row.disposition === "available"
+          && row.stage === "organization"
+          && row.completed_generation === generation
+          && row.accepted_model_binding_generation === generation
+          && row.organizer_proposal_checkpoint === null
+          && !unsafeRecords.has(recordRef);
+        if (!safe) continue;
+        const family = families.get(familyKey) ?? [];
+        family.push(row);
+        families.set(familyKey, family);
+      }
+
+      let queued = 0;
+      for (const row of retryableQuarantines) {
+        const retried = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.update(work).set({
+            recoverAfter: input.now,
+            updatedAt: input.now,
+          }).where(and(
+            eq(work.recordId, row.record_id),
+            eq(work.generation, row.generation),
+            eq(work.state, "quarantined"),
+            lte(work.updatedAt, input.observedThrough),
+            row.failure_code === "authority_unavailable"
+              ? eq(work.failureCode, "authority_unavailable")
+              : and(
+                eq(work.failureCode, "candidate_unavailable"),
+                eq(work.failureDetail, "candidate_selection_invalid"),
+              ),
+          )).returning({ record_id: work.recordId }));
+        if (retried.length === 1) queued += 1;
+      }
+      for (const family of families.values()) {
+        const recoveryId = randomUUID();
+        for (const row of family) {
+          const recordRef = row.record_id;
+          const sourceGeneration = row.generation;
+          const changeReason = row.change_reason;
+          assertReason(changeReason);
+          const admitted = await admitSemanticWorkWithinTransaction(tx, {
+            recordRef,
+            changeReason,
+            admissionCommitment: this.options.commitments.manualRecovery({
+              recordRef,
+              sourceGeneration,
+              recoveryId,
+              authorizedBy: input.authorizedBy,
+              observedThrough: input.observedThrough,
+            }),
+            now: input.now,
+          });
+          if (!admitted.admitted || admitted.generation !== sourceGeneration + 1) {
+            throw new Error("Reflection manual recovery admission lost its generation fence");
+          }
+          const marked = await executeTypedRecordProductQuery(tx,
+            recordProductTypedDb.update(work).set({
+              manualRecoveryId: recoveryId,
+              manualRecoverySourceGeneration: sourceGeneration,
+              manualRecoveryAuthorizedBy: input.authorizedBy,
+              manualRecoveryAuthorizedAt: input.now,
+              manualRecoveryObservedThrough: input.observedThrough,
+              manualRecoveryServiceModelId: input.modelId,
+              manualRecoverySpentAt: null,
+            }).where(and(
+              eq(work.recordId, recordRef),
+              eq(work.generation, admitted.generation),
+              eq(work.state, "due"),
+              isNull(work.acceptedModelBinding),
+            )).returning({ record_id: work.recordId }));
+          if (marked.length !== 1) {
+            throw new Error("Reflection manual recovery marker lost its generation fence");
+          }
+          queued += 1;
+        }
+      }
+      return { queued, held: held.length - queued };
+    }, { isolationLevel: "read committed" });
   }
 
   async attachPublicationWithinTransaction(
@@ -1263,7 +1516,8 @@ export class PostgresSemanticWorkStore
                   candidate.execution_maximum_stage,
                   work.projection_refresh_only,
                   work.accepted_model_binding,
-                  work.accepted_model_binding_generation`,
+                  work.accepted_model_binding_generation,
+                  work.manual_recovery_id`,
         [
           now,
           MAXIMUM_ATTEMPTS,
@@ -1303,7 +1557,13 @@ export class PostgresSemanticWorkStore
       if ((rawBinding === null) !== (bindingGeneration === null)) {
         throw new TypeError("Invalid semantic work model binding");
       }
-      let modelBatchFamilyKey = "fresh";
+      const manualRecoveryId = row["manual_recovery_id"];
+      if (manualRecoveryId != null && typeof manualRecoveryId !== "string") {
+        throw new TypeError("Invalid semantic work manual recovery identity");
+      }
+      let modelBatchFamilyKey = manualRecoveryId == null
+        ? "fresh"
+        : `manual-recovery:${manualRecoveryId}`;
       if (rawBinding !== null) {
         if (bindingGeneration !== rowInteger(row, "generation")) {
           throw new TypeError("Invalid semantic work model binding generation");
@@ -1486,6 +1746,12 @@ export class PostgresSemanticWorkStore
           accepted_model_binding: reflectionRecordSemanticWork.acceptedModelBinding,
           accepted_model_binding_generation:
             reflectionRecordSemanticWork.acceptedModelBindingGeneration,
+          manual_recovery_id: reflectionRecordSemanticWork.manualRecoveryId,
+          manual_recovery_source_generation:
+            reflectionRecordSemanticWork.manualRecoverySourceGeneration,
+          manual_recovery_service_model_id:
+            reflectionRecordSemanticWork.manualRecoveryServiceModelId,
+          manual_recovery_spent_at: reflectionRecordSemanticWork.manualRecoverySpentAt,
           disposition: reflectionRecords.disposition,
         }).from(reflectionRecordSemanticWork)
           .innerJoin(
@@ -1544,16 +1810,41 @@ export class PostgresSemanticWorkStore
         )) throw new Error("Reflection model batch binding changed");
         return first;
       }
-      const accepted = parseMemoryOperationBinding(await resolve());
-      if (accepted.role !== "memoryReflection") {
+      const recoveryRows = rows.filter(row => row["manual_recovery_id"] != null);
+      if (recoveryRows.length !== 0 && recoveryRows.length !== rows.length) {
+        throw new Error("Reflection manual recovery batch changed");
+      }
+      const recoveryId = recoveryRows[0]?.["manual_recovery_id"];
+      const recoveryModelId = recoveryRows[0]?.["manual_recovery_service_model_id"];
+      if (recoveryRows.length > 0 && (
+        typeof recoveryId !== "string"
+        || typeof recoveryModelId !== "string"
+        || recoveryModelId.length === 0
+        || recoveryRows.some(row => row["manual_recovery_id"] !== recoveryId
+          || row["manual_recovery_service_model_id"] !== recoveryModelId
+          || row["manual_recovery_spent_at"] !== null
+          || !Number.isSafeInteger(row["manual_recovery_source_generation"])
+          || Number(row["manual_recovery_source_generation"])
+            !== Number(row["generation"]) - 1
+        )
+      )) throw new Error("Reflection manual recovery authorization changed");
+      const resolved = parseMemoryOperationBinding(await resolve());
+      if (resolved.role !== "memoryReflection") {
         throw new TypeError("Reflection model binding role is invalid");
       }
+      if (recoveryRows.length > 0 && resolved.kind !== "service") {
+        throw new Error("Reflection manual recovery service authority changed");
+      }
+      const accepted: MemoryOperationBinding = recoveryRows.length > 0
+        ? { ...resolved, modelId: recoveryModelId! }
+        : resolved;
       for (const claim of sorted) {
         const updated = await executeTypedRecordProductQuery(tx,
           recordProductTypedDb.update(reflectionRecordSemanticWork)
             .set({
               acceptedModelBinding: accepted,
               acceptedModelBindingGeneration: claim.generation,
+              ...(recoveryRows.length === 0 ? {} : { manualRecoverySpentAt: now }),
               updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
             })
             .where(and(
@@ -1564,6 +1855,12 @@ export class PostgresSemanticWorkStore
               eq(reflectionRecordSemanticWork.state, "claimed"),
               isNull(reflectionRecordSemanticWork.acceptedModelBinding),
               isNull(reflectionRecordSemanticWork.acceptedModelBindingGeneration),
+              recoveryRows.length === 0
+                ? undefined
+                : eq(reflectionRecordSemanticWork.manualRecoveryId, recoveryId!),
+              recoveryRows.length === 0
+                ? undefined
+                : isNull(reflectionRecordSemanticWork.manualRecoverySpentAt),
               gt(reflectionRecordSemanticWork.leaseExpiresAt, now),
             ))
             .returning({ record_id: reflectionRecordSemanticWork.recordId }));
