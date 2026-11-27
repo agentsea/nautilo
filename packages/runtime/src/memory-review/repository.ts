@@ -669,6 +669,35 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
         outcome: "failed", phase: input.phase, code: input.reason, modelId: "",
         counts: { created: 0, replaced: 0, promoted: 0, demoted: 0 }, effects: [], durationMs: 0, createdAt: input.now,
       }).onConflictDoNothing();
+      if (input.claim.modelRecovery === "authorized") {
+        const [recovery] = await tx.select().from(memoryReviewModelRecoveries).where(and(
+          eq(memoryReviewModelRecoveries.workId, input.claim.workId),
+          eq(memoryReviewModelRecoveries.headTurnId, input.claim.turnIds[0]!),
+          eq(memoryReviewModelRecoveries.recoveryAttemptId, input.claim.attemptId),
+        )).for("update");
+        const exactUnspentReservation = recovery?.spentAt === null
+          && recovery.turnIds.length === input.claim.turnIds.length
+          && recovery.turnIds.every((turnId, index) => turnId === input.claim.turnIds[index]);
+        if (exactUnspentReservation) {
+          await tx.update(memoryReviewModelRecoveries).set({ recoveryAttemptId: null }).where(and(
+            eq(memoryReviewModelRecoveries.workId, input.claim.workId),
+            eq(memoryReviewModelRecoveries.recoveryAttemptId, input.claim.attemptId),
+            isNull(memoryReviewModelRecoveries.spentAt),
+          ));
+          // claimNext deliberately leaves updatedAt unchanged while claiming a
+          // recovery. Restore the blocked attempt identity without touching it:
+          // a newer timestamp would look like a post-authorization source edit.
+          await tx.update(memoryReviewTurns).set({
+            attemptId: recovery.blockedAttemptId,
+            leaseUntil: null,
+          }).where(and(
+            inArray(memoryReviewTurns.id, input.claim.turnIds),
+            eq(memoryReviewTurns.attemptId, input.claim.attemptId),
+            isNull(memoryReviewTurns.receiptId),
+          ));
+          return;
+        }
+      }
       const recovery = input.claim.modelRecovery !== undefined;
       await tx.update(memoryReviewTurns).set({
         failurePhase: recovery ? "model" : input.phase,

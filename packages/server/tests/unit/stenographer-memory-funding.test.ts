@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { MemoryProviderOutcomeUnknownError, type CapabilityFundingSession } from "@nautilo/agent";
-import type { DirectDatabase } from "@nautilo/db";
+import { roomJournalModelRecoveries, type DirectDatabase } from "@nautilo/db";
 import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
 import { compactionModelExposureDependencies, createRoomSideModelInvoker, extractionModelExposureDependencies,
   type CompactionClaim, type ExtractionClaim } from "@nautilo/runtime";
@@ -111,6 +111,7 @@ function ordinaryCompactionDatabase() {
 function ordinaryExtractionDatabase(
   disabledAt: Date | null = null,
   replayRows: readonly Record<string, unknown>[] = [],
+  manualRecovery?: Readonly<{ id: string; targetModelId: string }>,
 ) {
   let accepted: MemoryOperationBinding | null = null;
   let authorityReads = 0;
@@ -119,6 +120,10 @@ function ordinaryExtractionDatabase(
     const keys = Object.keys(fields);
     const rows = keys.includes("acceptedPlan")
       ? [{ roomId: ROOM, accepted, acceptedPlan: null }]
+      : keys.includes("targetModelId") && manualRecovery
+        ? [{ targetModelId: manualRecovery.targetModelId }]
+      : keys.length === 1 && keys[0] === "id" && manualRecovery
+        ? [{ id: manualRecovery.id }]
       : keys.includes("attemptOutcome")
         ? [...replayRows]
       : keys.includes("disabledAt")
@@ -131,18 +136,22 @@ function ordinaryExtractionDatabase(
       innerJoin() { return this; },
       where() { return this; },
       for() { return this; },
-      limit: () => Promise.resolve(rows),
+      limit: () => Object.assign(Promise.resolve(rows), {
+        for: () => Promise.resolve(rows),
+      }),
     };
     return query;
   };
-  const update = () => ({
+  const update = (table: unknown) => ({
     set: (values: Record<string, unknown>) => ({
-      where: async () => {
+      where: () => {
         updates.push(values);
         if ("acceptedModelBinding" in values) {
           accepted = values["acceptedModelBinding"] as MemoryOperationBinding;
         }
-        return [];
+        return table === roomJournalModelRecoveries
+          ? { returning: async () => manualRecovery ? [{ id: manualRecovery.id }] : [] }
+          : Promise.resolve([]);
       },
     }),
   });
@@ -517,6 +526,63 @@ describe("ordinary Stenographer Memory funding", () => {
     expect(result).toBeInstanceOf(MemoryProviderOutcomeUnknownError);
     expect(state.authorityReads()).toBe(0);
     expect(state.accepted()).toBeNull();
+  });
+
+  test("spends one manual recovery only from the final provider-dispatch guard", async () => {
+    const recovery = {
+      id: "60000000-0000-4000-8000-000000000001",
+      targetModelId: "openai:gpt-6-luna",
+    };
+    const state = ordinaryExtractionDatabase(null, [], recovery);
+    const claim: ExtractionClaim = {
+      ...ordinaryExtractionClaim(null),
+      manualModelRecoveryId: recovery.id,
+      manualRecoveryModelId: recovery.targetModelId,
+    };
+    let providerCalls = 0;
+    let guard: (() => Promise<void>) | undefined;
+    const runtime = createStenographerMemoryFunding({
+      db: state.db,
+      ports: {
+        readRecord: async (dependency) => journalRecord(dependency.recordRef),
+        readSource: async () => ({
+          status: "current",
+          kind: "human",
+          authorHumanId: HUMAN,
+          audienceHumanIds: [HUMAN],
+          includesPublicBoundary: true,
+        }),
+        readAudience: async () => ({ humanIds: [HUMAN], includesPublicBoundary: true }),
+      },
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+      commitmentKey: new Uint8Array(32).fill(23),
+      resolveServiceModel: () => "openai:other-model",
+      assertAvailable: () => Promise.resolve(),
+      createInvoker: (options) => {
+        guard = options.beforeProviderDispatch;
+        return async () => {
+          await options.beforeProviderDispatch?.();
+          providerCalls += 1;
+          throw new MemoryProviderOutcomeUnknownError();
+        };
+      },
+    });
+
+    const admitted = await runtime.admitExtractionModel(
+      claim,
+      extractionModelExposureDependencies(claim),
+    );
+    expect(admitted.modelId).toBe(recovery.targetModelId);
+    expect(guard).toBeFunction();
+    expect(state.updates.some((update) => "spentAt" in update)).toBe(false);
+    expect(providerCalls).toBe(0);
+
+    const ambiguous = await admitted.invoke("prompt").catch((error: unknown) => error);
+    expect(ambiguous).toBeInstanceOf(MemoryProviderOutcomeUnknownError);
+    expect(state.updates.filter((update) => "spentAt" in update)).toHaveLength(1);
+    expect(providerCalls).toBe(1);
+    await guard!();
+    expect(state.updates.filter((update) => "spentAt" in update)).toHaveLength(1);
   });
 
   test("freezes a personal compaction binding from exact current Human Record ancestry", async () => {

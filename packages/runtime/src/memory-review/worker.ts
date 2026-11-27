@@ -49,7 +49,10 @@ export interface MemoryReviewInput {
 
 export interface AdmittedMemoryReviewModel {
   modelId: string;
-  invokeModel: NonNullable<MemoryReviewOptions["invokeModel"]>;
+  invokeModel(
+    input: Parameters<NonNullable<MemoryReviewOptions["invokeModel"]>>[0],
+    beforeProviderDispatch?: () => Promise<void>,
+  ): ReturnType<NonNullable<MemoryReviewOptions["invokeModel"]>>;
   assertCurrent(): Promise<void>;
   onModelExposure?: NonNullable<MemoryReviewOptions["onModelExposure"]>;
   resolveMemoryExposureDependencies?: NonNullable<MemoryReviewOptions["resolveMemoryExposureDependencies"]>;
@@ -104,7 +107,8 @@ export interface MemoryReviewWorkerDeps {
   admitModel?(claim: MemoryReviewClaim, input: MemoryReviewInput, assertCurrent: () => Promise<void>): Promise<AdmittedMemoryReviewModel | null>;
   openAccess?(identity: BackgroundAttemptIdentity, signal: AbortSignal, claim: MemoryReviewClaim): Promise<BackgroundAccessSession>;
   prepare?: typeof prepareMemoryReview;
-  invokeModel?: NonNullable<MemoryReviewOptions["invokeModel"]>;
+  /** Test/provider seam; production adapters must invoke the final dispatch guard. */
+  invokeModel?: AdmittedMemoryReviewModel["invokeModel"];
   observeAttempt?(observation: BackgroundAttemptObservation): void | Promise<void>;
   now?: () => Date;
   onError?(phase: "poll" | "effects", error: unknown): void;
@@ -202,7 +206,7 @@ export class MemoryReviewWorker {
           const admitted: AdmittedMemoryReviewModel = admittedByPort
             ?? await this.admitServiceModel(claim, () => context.assertCurrent());
           let recoveryDispatch: Promise<void> | undefined;
-          const invokeModel: NonNullable<MemoryReviewOptions["invokeModel"]> = async (invocation) => {
+          const beforeProviderDispatch = async () => {
             await context.assertCurrent();
             await admitted.assertCurrent();
             if (claim.modelRecovery === "authorized") {
@@ -212,7 +216,11 @@ export class MemoryReviewWorker {
               recoveryDispatch ??= this.deps.repository.beginModelRecoveryDispatch(claim);
               await recoveryDispatch;
             }
-            return admitted.invokeModel(invocation);
+          };
+          const invokeModel: NonNullable<MemoryReviewOptions["invokeModel"]> = async (invocation) => {
+            await context.assertCurrent();
+            await admitted.assertCurrent();
+            return admitted.invokeModel(invocation, beforeProviderDispatch);
           };
           const prepared: MemoryReviewPreparation = await (this.deps.prepare ?? prepareMemoryReview)(input.messages, {
             memoryAccessEnvelope: input.memoryAccessEnvelope,
@@ -302,8 +310,8 @@ export class MemoryReviewWorker {
     return resolved;
   }
 
-  private createServiceInvoker(claim: MemoryReviewClaim): NonNullable<MemoryReviewOptions["invokeModel"]> {
-    return (input) => runBackgroundModelInvocation({
+  private createServiceInvoker(claim: MemoryReviewClaim): AdmittedMemoryReviewModel["invokeModel"] {
+    return (input, beforeProviderDispatch) => runBackgroundModelInvocation({
       usage: {
         callType: "memory_review", userId: null, roomId: claim.roomId,
         metadata: { workId: claim.workId, attemptId: claim.attemptId, agentId: claim.agentId },
@@ -311,7 +319,7 @@ export class MemoryReviewWorker {
       ...(input.signal === undefined ? {} : { signal: input.signal }),
       invoke: async (signal) => {
         const invocation = { ...input, ...(signal === undefined ? {} : { signal }) };
-        if (this.deps.invokeModel) return this.deps.invokeModel(invocation);
+        if (this.deps.invokeModel) return this.deps.invokeModel(invocation, beforeProviderDispatch);
         const { response } = await invokeChatModelWithFallback(
           invocation.messages,
           invocation.tools,
@@ -324,6 +332,7 @@ export class MemoryReviewWorker {
             serverFundedService: "shared_memory_maintenance",
             modelFallbackMode: "none",
             sameModelRetryMode: "none",
+            ...(beforeProviderDispatch === undefined ? {} : { beforeProviderDispatch }),
             useOpenAIResponsesApi: true,
             reasoningOutput: invocation.modelId.startsWith("openai:"),
           },

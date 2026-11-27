@@ -182,7 +182,8 @@ describe("durable Memory review worker", () => {
       events.push("dispatch");
       if (!admitted) throw new Error("lease_lost");
     };
-    deps.invokeModel = async () => {
+    deps.invokeModel = async (_invocation, beforeProviderDispatch) => {
+      await beforeProviderDispatch?.();
       events.push("provider");
       return new AIMessage("fixture response");
     };

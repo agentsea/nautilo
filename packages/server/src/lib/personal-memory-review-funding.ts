@@ -23,7 +23,7 @@ import {
   type OpenMemoryOperationInput,
 } from "./personal-memory-operation";
 
-type InvokeModel = NonNullable<MemoryReviewOptions["invokeModel"]>;
+type InvokeModel = AdmittedMemoryReviewModel["invokeModel"];
 type MemoryReviewSnapshot = Parameters<NonNullable<MemoryReviewOptions["onModelExposure"]>>[0][number];
 
 async function translatePersonalEvidenceLoss<T>(operation: () => Promise<T>): Promise<T> {
@@ -73,7 +73,7 @@ export function createPersonalMemoryReviewAdmitter(options: PersonalMemoryReview
       resolveServiceModel: options.resolveServiceModel,
       ...(options.openHumanSession === undefined ? {} : { openHumanSession: options.openHumanSession }),
     }));
-    const invokeModel: InvokeModel = async (invocation) => translatePersonalEvidenceLoss(() => runWithUsageContext({
+    const invokeModel: InvokeModel = async (invocation, beforeProviderDispatch) => translatePersonalEvidenceLoss(() => runWithUsageContext({
       callType: "memory_review",
       userId: operation.humanUserId,
       roomId: claim.roomId,
@@ -88,6 +88,7 @@ export function createPersonalMemoryReviewAdmitter(options: PersonalMemoryReview
           ? (() => { throw new Error("personal_memory_review_funding_unavailable"); })()
           : { fundingHumanUserId: operation.humanUserId, fundingSession: operation.fundingSession,
               modelFallbackMode: "none" as const, sameModelRetryMode: "none" as const,
+              ...(beforeProviderDispatch === undefined ? {} : { beforeProviderDispatch }),
               useOpenAIResponsesApi: true, reasoningOutput: operation.modelId.startsWith("openai:") };
       const { response } = await invokeChatModelWithFallback(
         invocation.messages,

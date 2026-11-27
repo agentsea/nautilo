@@ -550,7 +550,7 @@ async function invokeOnceWithShortRetries(
   fundingService: ModelFundingService | undefined,
   fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean; readonly beforeProviderDispatch?: () => Promise<void> },
   endpoint: string,
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
 ): Promise<AIMessage> {
@@ -585,6 +585,9 @@ async function invokeOnceWithShortRetries(
         endpoint,
         signal: llmCallConfig.signal,
         hasObservedProviderWork: () => hasAssistantVisibleOutputForCurrentTurn(agentId),
+        ...(attemptPolicyOptions.beforeProviderDispatch === undefined ? {} : {
+          assertStillAuthorized: attemptPolicyOptions.beforeProviderDispatch,
+        }),
         invoke: async () => {
           const response = await invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress);
           attemptPolicyOptions.validateResponse?.(response);
@@ -652,7 +655,7 @@ async function invokeForegroundAttemptWithUsageContext(
   funding: UsageFundingProvenance,
   useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean; readonly beforeProviderDispatch?: () => Promise<void> },
   endpoint: string,
 ): Promise<AIMessage> {
   const invoke = () => invokeOnceWithShortRetries(
@@ -919,6 +922,8 @@ async function invokeScopedChatModelWithFallback(
     providerCacheRoomId?: string | null;
     /** Restricted research only: recover a rejected context on this same model. */
     recoverContext?: RecoverPreparedContext;
+    /** Trusted live fence run at the final direct or marketplace provider-attempt seam. */
+    beforeProviderDispatch?: () => Promise<void>;
   },
 ): Promise<{ response: AIMessage; modelUsed: string }> {
   const callerProviderTimeoutMs = invokeOptions?.providerTimeoutMs;
@@ -1221,17 +1226,19 @@ async function invokeScopedChatModelWithFallback(
                 ...(openRouterSessionId === undefined ? {} : { openrouterSessionId: openRouterSessionId }),
                 funding: surplusFunding,
                 hasDeliveredOutput: attemptVisibility.hasVisibleOutput,
-                ...(providerMode === "any" ? {
+                ...(providerMode === "any" || invokeOptions?.beforeProviderDispatch !== undefined ? {
                   assertStillAuthorized: async () => {
+                  assertNotCancelled();
+                  if (providerMode === "any" && !allowsSellerBroadening()) {
+                    throw new ForegroundFundingRecheckError(new Error("Surplus seller broadening is no longer authorized."));
+                  }
+                  try {
+                    if (attemptFundingSession) await attemptFundingSession.recheckAttempt(currentModelId, "surplus");
+                    else await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
                     assertNotCancelled();
-                    if (!allowsSellerBroadening()) {
-                      throw new ForegroundFundingRecheckError(new Error("Surplus seller broadening is no longer authorized."));
-                    }
-                    try {
-                      if (attemptFundingSession) await attemptFundingSession.recheckAttempt(currentModelId, "surplus");
-                      else await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
-                    } catch (error) { throw new ForegroundFundingRecheckError(error); }
-                    assertNotCancelled();
+                    await invokeOptions?.beforeProviderDispatch?.();
+                  } catch (error) { throw new ForegroundFundingRecheckError(error); }
+                  assertNotCancelled();
                   },
                 } : {}),
                 ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
@@ -1370,6 +1377,18 @@ async function invokeScopedChatModelWithFallback(
               ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
               onOpenRouterCreditHoldSettled: () => { creditHoldSettledByModel.add(currentModelId); },
               hasAttemptOutput: attemptVisibility.hasVisibleOutput,
+              ...(invokeOptions?.beforeProviderDispatch === undefined ? {} : {
+                beforeProviderDispatch: async () => {
+                  assertNotCancelled();
+                  try {
+                    if (attemptFundingSession) await attemptFundingSession.recheckAttempt(currentModelId, "direct");
+                    else await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
+                    assertNotCancelled();
+                    await invokeOptions.beforeProviderDispatch!();
+                  } catch (error) { throw new ForegroundFundingRecheckError(error); }
+                  assertNotCancelled();
+                },
+              }),
             },
             endpoint,
           );

@@ -57,6 +57,8 @@ export function createRoomSideModelInvoker(opts: {
   fundingSession?: ForegroundChatFundingSession;
   /** Trusted admission for one same-model marketplace retry without a provider pin. */
   allowUnpinnedSurplusRetry?: true;
+  /** Final live fence at the direct or marketplace provider-attempt seam. */
+  beforeProviderDispatch?: () => Promise<void>;
   assertCurrent?: () => Promise<void>;
 }): (prompt: string, signal?: AbortSignal) => Promise<string> {
   return async (prompt, signal) => {
@@ -90,6 +92,9 @@ export function createRoomSideModelInvoker(opts: {
               ...(opts.allowUnpinnedSurplusRetry === true
                 ? { allowUnpinnedSurplusRetry: true as const }
                 : {}),
+              ...(opts.beforeProviderDispatch === undefined ? {} : {
+                beforeProviderDispatch: opts.beforeProviderDispatch,
+              }),
               modelFallbackMode: opts.fundingSession === undefined ? opts.invocationPolicy?.modelFallbackMode ?? "agent_chain" : "none",
               ...(opts.invocationPolicy === undefined ? {} : {
                 sameModelRetryMode: opts.invocationPolicy.sameModelRetryMode,

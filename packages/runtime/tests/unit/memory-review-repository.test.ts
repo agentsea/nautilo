@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { encryptionTransitionPolicy, memoryReviewTurns, type SQL } from "@nautilo/db";
+import { encryptionTransitionPolicy, memoryReviewModelRecoveries, memoryReviewTurns, type SQL } from "@nautilo/db";
 import {
   PostgresMemoryReviewRepository,
   selectMemoryReviewPrefix,
@@ -258,6 +258,76 @@ describe("Memory repository query contracts without a live database", () => {
     expect(update?.["retryAt"]).toEqual(new Date(NOW.getTime() + policy.retryMs));
     await repo.fail({ claim, phase: "model", reason: "model_unavailable", retryable: false, now: NOW });
     expect(update?.["retryAt"]).toBeNull();
+  });
+
+  test("a definitive pre-dispatch recovery failure releases the exact unspent reservation", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const recoveryClaim = { ...claim, modelRecovery: "authorized" as const };
+    const recovery = {
+      workId: claim.workId,
+      headTurnId: claim.turnIds[0]!,
+      recoveryAttemptId: claim.attemptId,
+      blockedAttemptId: "blocked-attempt",
+      turnIds: [...claim.turnIds],
+      spentAt: null,
+    };
+    const db = {
+      select: () => ({ from: (table: unknown) => ({ where: () => ({
+        for: async () => table === memoryReviewModelRecoveries ? [recovery] : [{ id: "turn" }],
+      }) }) }),
+      insert: () => ({ values: () => ({ onConflictDoNothing: async () => {} }) }),
+      update: (table: unknown) => ({ set: (values: Record<string, unknown>) => ({
+        where: async () => { updates.push({ table, values }); },
+      }) }),
+    };
+    const repo = new PostgresMemoryReviewRepository(policy, {
+      ...db,
+      transaction: async <T>(run: (tx: typeof db) => Promise<T>) => run(db),
+    } as never);
+
+    await repo.fail({ claim: recoveryClaim, phase: "model", reason: "authority_or_source_unavailable",
+      retryable: false, now: NOW });
+
+    expect(updates).toEqual([
+      { table: memoryReviewModelRecoveries, values: { recoveryAttemptId: null } },
+      { table: memoryReviewTurns, values: { attemptId: "blocked-attempt", leaseUntil: null } },
+    ]);
+    expect(updates[1]!.values).not.toHaveProperty("updatedAt");
+  });
+
+  test("a spent recovery with an ambiguous provider failure remains quarantined", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const recoveryClaim = { ...claim, modelRecovery: "authorized" as const };
+    const recovery = {
+      workId: claim.workId,
+      headTurnId: claim.turnIds[0]!,
+      recoveryAttemptId: claim.attemptId,
+      blockedAttemptId: "blocked-attempt",
+      turnIds: [...claim.turnIds],
+      spentAt: NOW,
+    };
+    const db = {
+      select: () => ({ from: (table: unknown) => ({ where: () => ({
+        for: async () => table === memoryReviewModelRecoveries ? [recovery] : [{ id: "turn" }],
+      }) }) }),
+      insert: () => ({ values: () => ({ onConflictDoNothing: async () => {} }) }),
+      update: (table: unknown) => ({ set: (values: Record<string, unknown>) => ({
+        where: async () => { updates.push({ table, values }); },
+      }) }),
+    };
+    const repo = new PostgresMemoryReviewRepository(policy, {
+      ...db,
+      transaction: async <T>(run: (tx: typeof db) => Promise<T>) => run(db),
+    } as never);
+
+    await repo.fail({ claim: recoveryClaim, phase: "model", reason: "provider_failed",
+      retryable: false, now: NOW });
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      table: memoryReviewTurns,
+      values: { failurePhase: "model", failureCode: "provider_outcome_unknown", retryAt: null },
+    });
   });
 });
 

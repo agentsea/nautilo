@@ -273,6 +273,32 @@ export function createStenographerMemoryFunding(input: Common) {
         throw new MemoryProviderOutcomeUnknownError();
       }
     }
+    let recoveryDispatch: Promise<void> | undefined;
+    const beforeProviderDispatch = manualRecoveryId === undefined ? undefined : async () => {
+      await admitted.assertCurrent();
+      recoveryDispatch ??= input.db.transaction(async tx => {
+        const [recovery] = await tx.select({
+          id: roomJournalModelRecoveries.id,
+        }).from(roomJournalModelRecoveries).where(and(
+          eq(roomJournalModelRecoveries.id, manualRecoveryId),
+          eq(roomJournalModelRecoveries.roomId, claim.roomId),
+          eq(roomJournalModelRecoveries.workKind, stage),
+          eq(roomJournalModelRecoveries.workId, operationKey),
+          eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
+          eq(roomJournalModelRecoveries.targetModelId, admitted.modelId),
+          isNull(roomJournalModelRecoveries.spentAt),
+        )).limit(1).for("update", { of: roomJournalModelRecoveries });
+        if (!recovery) throw new Error("Manual Journal recovery authorization changed");
+        const spent = await tx.update(roomJournalModelRecoveries).set({
+          spentAt: new Date(),
+        }).where(and(
+          eq(roomJournalModelRecoveries.id, manualRecoveryId),
+          isNull(roomJournalModelRecoveries.spentAt),
+        )).returning({ id: roomJournalModelRecoveries.id });
+        if (spent.length !== 1) throw new Error("Manual Journal recovery authorization changed");
+      });
+      await recoveryDispatch;
+    };
     const invoke = (input.createInvoker ?? createRoomSideModelInvoker)({ modelId: admitted.modelId,
       ...(admitted.humanUserId === null ? {} : { userId: admitted.humanUserId }),
       roomId: claim.roomId, laneKey: `room:${claim.roomId}:${stage}`, operationId: operationKey,
@@ -287,39 +313,13 @@ export function createStenographerMemoryFunding(input: Common) {
           ? admitted.fundingSession
           : Object.freeze({ ...admitted.fundingSession, allowUnpinnedSurplusRetry: true as const }),
       }),
+      ...(beforeProviderDispatch === undefined ? {} : { beforeProviderDispatch }),
       assertCurrent: () => admitted.assertCurrent(),
     });
-    let dispatched = false;
     return {
       modelId: admitted.modelId,
       assertCurrent: () => admitted.assertCurrent(),
-      invoke: manualRecoveryId === undefined ? invoke : async (prompt, signal) => {
-        if (dispatched) throw new Error("Manual Journal recovery was already dispatched");
-        await admitted.assertCurrent();
-        await input.db.transaction(async tx => {
-          const [recovery] = await tx.select({
-            id: roomJournalModelRecoveries.id,
-          }).from(roomJournalModelRecoveries).where(and(
-            eq(roomJournalModelRecoveries.id, manualRecoveryId),
-            eq(roomJournalModelRecoveries.roomId, claim.roomId),
-            eq(roomJournalModelRecoveries.workKind, stage),
-            eq(roomJournalModelRecoveries.workId, operationKey),
-            eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
-            eq(roomJournalModelRecoveries.targetModelId, admitted.modelId),
-            isNull(roomJournalModelRecoveries.spentAt),
-          )).limit(1).for("update", { of: roomJournalModelRecoveries });
-          if (!recovery) throw new Error("Manual Journal recovery authorization changed");
-          const spent = await tx.update(roomJournalModelRecoveries).set({
-            spentAt: new Date(),
-          }).where(and(
-            eq(roomJournalModelRecoveries.id, manualRecoveryId),
-            isNull(roomJournalModelRecoveries.spentAt),
-          )).returning({ id: roomJournalModelRecoveries.id });
-          if (spent.length !== 1) throw new Error("Manual Journal recovery authorization changed");
-        });
-        dispatched = true;
-        return invoke(prompt, signal);
-      },
+      invoke,
     };
   };
   return {

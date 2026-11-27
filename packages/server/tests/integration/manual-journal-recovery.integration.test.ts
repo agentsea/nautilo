@@ -190,7 +190,15 @@ function funding(
     commitmentKey: new Uint8Array(32).fill(29),
     resolveServiceModel: () => MODEL,
     assertAvailable: () => Promise.resolve(),
-    createInvoker: () => createInvoker(),
+    createInvoker: options => {
+      const invoke = createInvoker();
+      return async (prompt, signal) => {
+        signal?.throwIfAborted();
+        await options.assertCurrent?.();
+        await options.beforeProviderDispatch?.();
+        return invoke(prompt);
+      };
+    },
   });
 }
 

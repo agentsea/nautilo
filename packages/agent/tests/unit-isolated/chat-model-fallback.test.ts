@@ -92,6 +92,7 @@ const invokeSurplusChatAttemptMock = mock(async (_input?: {
   toolBindingOptions?: Record<string, unknown>;
   funding: UsageFundingProvenance;
   hasDeliveredOutput: () => boolean;
+  assertStillAuthorized?: () => void | Promise<void>;
   invokeModel: (
     model: { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },
     messages: BaseMessage[],
@@ -224,6 +225,7 @@ let invokeChatModelWithFallback: (
     preparedStableSystemPrefixLength?: number;
     providerCacheRoomId?: string | null;
     recoverContext?: RecoverPreparedContext;
+    beforeProviderDispatch?: () => Promise<void>;
   },
 ) => Promise<{ response: AIMessage; modelUsed: string }>;
 
@@ -3278,6 +3280,90 @@ describe("personal marketplace invocation", () => {
           personalCredential: { apiKey: `caller-secret-${route}` } });
       } };
   }
+  function directSession(recheckAttempt: ForegroundChatFundingSession["recheckAttempt"] = async () => {}): ForegroundChatFundingSession {
+    return {
+      kind: "personal",
+      recheckAttempt,
+      async runAttempt(_modelId, run) {
+        return run({
+          usageFunding: { kind: "personal", humanUserId: "payer", payerHumanId: "payer",
+            providerRoute: "anthropic", credentialId: "caller-anthropic", credentialRevision: 1 },
+          personalCredential: { apiKey: "caller-secret-anthropic" },
+        });
+      },
+    };
+  }
+  test("runs the recovery guard after direct funding recheck and immediately before provider invocation", async () => {
+    const order: string[] = [];
+    const fundingSession = directSession(async (_modelId, transport) => { order.push(`recheck:${transport}`); });
+    createUniversalModelMock.mockImplementation(async () => {
+      order.push("model");
+      return { bindTools: () => {
+        order.push("bind");
+        return { invoke: async () => { order.push("provider"); return new AIMessage("direct"); } };
+      } } as unknown as AuraModel;
+    });
+
+    const result = await invokeChatModelWithFallback([new HumanMessage("memory")], [], A,
+      "payer", "agent-1", null, undefined, {
+        fundingSession, modelFallbackMode: "none", sameModelRetryMode: "none",
+        beforeProviderDispatch: async () => { order.push("grant"); },
+      });
+
+    expect(result.response.content).toBe("direct");
+    expect(order).toEqual(["model", "bind", "recheck:direct", "grant", "provider"]);
+  });
+
+  test("revoked direct authority and final cancellation never consume or reach the provider", async () => {
+    let providerCalls = 0;
+    let grantCalls = 0;
+    const revoked = new Error("recovery authority revoked");
+    createUniversalModelMock.mockImplementation(async () => ({ bindTools: () => ({
+      invoke: async () => { providerCalls += 1; return new AIMessage("unreachable"); },
+    }) }) as unknown as AuraModel);
+    const revokedResult = await invokeChatModelWithFallback([new HumanMessage("memory")], [], A,
+      "payer", "agent-1", null, undefined, {
+        fundingSession: directSession(), modelFallbackMode: "none", sameModelRetryMode: "none",
+        beforeProviderDispatch: async () => { grantCalls += 1; throw revoked; },
+      }).catch((error: unknown) => error);
+    expect(revokedResult).toBe(revoked);
+    expect({ grantCalls, providerCalls }).toEqual({ grantCalls: 1, providerCalls: 0 });
+
+    const cancellation = new AbortController();
+    const cancelledSession = directSession(async () => { cancellation.abort(new Error("cancelled at final preflight")); });
+    const cancelled = await invokeChatModelWithFallback([new HumanMessage("memory")], [], A,
+      "payer", "agent-1", null, { signal: cancellation.signal }, {
+        fundingSession: cancelledSession, modelFallbackMode: "none", sameModelRetryMode: "none",
+        beforeProviderDispatch: async () => { grantCalls += 1; },
+      }).catch((error: unknown) => error);
+    expect(cancelled).toMatchObject({ message: "cancelled at final preflight" });
+    expect({ grantCalls, providerCalls }).toEqual({ grantCalls: 1, providerCalls: 0 });
+  });
+
+  test("runs the same final recovery guard on a qualified Surplus provider attempt", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    const order: string[] = [];
+    const fundingSession: ForegroundChatFundingSession = {
+      ...session(false),
+      recheckAttempt: async (_modelId, transport) => { order.push(`recheck:${transport}`); },
+    };
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      order.push("marketplace-adapter");
+      await input?.assertStillAuthorized?.();
+      order.push("provider");
+      return { kind: "served", response: new AIMessage("surplus") };
+    });
+
+    const result = await invokeChatModelWithFallback([new HumanMessage("memory")], [], A,
+      "payer", "agent-1", null, undefined, {
+        fundingSession, modelFallbackMode: "none", sameModelRetryMode: "none",
+        beforeProviderDispatch: async () => { order.push("grant"); },
+      });
+
+    expect(result.response.content).toBe("surplus");
+    expect(order).toEqual(["marketplace-adapter", "recheck:surplus", "grant", "provider"]);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
   test("uses the personal marketplace key before the matching caller direct key", async () => {
     cachedServerModelConfig = { preferSurplus: true };
     invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
