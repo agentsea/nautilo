@@ -57,6 +57,7 @@ function planner(options: Readonly<{
   changedLifecycle?: "current" | "stale";
   changedAuthorityUnavailable?: boolean;
   changedBindingGeneration?: () => number;
+  originPublicationBindingRef?: string;
 }> = {}) {
   const audiences = new Map([
     ["access:a", ["human:alice", "human:bob"]],
@@ -150,7 +151,7 @@ function planner(options: Readonly<{
         const namespace = recordRef === "record:a" ? "access:a" : "publication:b";
         const bindingRef = `journal:namespace:${namespace}:ordinary:v1`;
         return Promise.resolve({
-          originPublicationBindingRef: bindingRef,
+          originPublicationBindingRef: options.originPublicationBindingRef ?? bindingRef,
           currentAccessBindingRefs: [bindingRef],
           representationGeneration: recordRef === "record:a"
             ? options.changedBindingGeneration?.() ?? 1
@@ -568,6 +569,28 @@ describe("exact cross-Room publication planner", () => {
     expect(audienceCalls).toEqual([["human:alice"]]);
     expect(result.plan.selectedInputs).toEqual(candidatePlan.inputs);
     expect(result.plan.modelExposureDependencies).toHaveLength(2);
+  });
+
+  test("reopens legacy room-local Memory through its proven origin and retains every exposure", async () => {
+    const read = { namespaceRef: "origin", bindingRef: "journal:namespace:access:a:ordinary:v1" };
+    const memory = { kind: "source" as const, sourceKind: "memory" as const, role: "candidate" as const,
+      logicalSourceRef: "memory:one" as const, contentGeneration: 1, representationGeneration: 2, authorityGeneration: 1, read };
+    const input = {
+      applicationPlanToken: token, candidatePlan: { ...candidatePlan, inputs: [first, memory] },
+      modelExposureDependencies: [
+        { kind: "record" as const, recordRef: first.recordRef, observedProcessingGeneration: 1, terminalAuthorityLeafHandles: ["access:a"] },
+        { kind: "source" as const, sourceKind: "memory", logicalSourceRef: memory.logicalSourceRef, observedRevision: "1",
+          observedContentFingerprint: "fingerprint:one", terminalAuthorityLeafHandle: "origin" },
+      ],
+    };
+    const originPublicationBindingRef = "journal:namespace:origin:ordinary:v1";
+    const result = await planner({ originPublicationBindingRef }).planExposure(input);
+    expect(result.status).toBe("planned");
+    if (result.status !== "planned") throw Error("expected verified origin");
+    expect(result.plan.selectedInputs[1]?.read).toEqual({ namespaceRef: "origin", bindingRef: originPublicationBindingRef });
+    expect(result.plan.modelExposureDependencies).toEqual(input.modelExposureDependencies);
+    expect(await planner().planExposure(input)).toMatchObject({ status: "unavailable", failureDetail: "publication_source_authority_unavailable" });
+    expect(await planner({ originPublicationBindingRef, sourceAuthorityUnavailable: true }).planExposure(input)).toMatchObject({ status: "unavailable" });
   });
 
   test("keeps stale changed Record in the full exposure audience during repair", async () => {
