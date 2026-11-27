@@ -11,7 +11,7 @@ export type ReflectionRecoveryDiagnostics = Readonly<{
   providerSucceededResultMissing: number;
   providerOutcomeUnknown: number;
   resumedFromSavedProposal: number;
-  quarantinedByReason: { invalidSelection: number; missingAuthority: number };
+  quarantinedByReason: { invalidSelection: number; missingAuthority: number; stalePlan: number; unavailableSource: number };
 }>;
 
 function serviceBinding(value: unknown): ServiceBinding | null {
@@ -131,11 +131,14 @@ export async function readReflectionRecoveryDiagnostics(
     .from(work).where(and(eq(work.state, "quarantined"), or(
       eq(work.failureCode, "authority_unavailable"),
       and(eq(work.failureCode, "candidate_unavailable"), eq(work.failureDetail, "candidate_selection_invalid")),
+      and(eq(work.failureCode, "publication_unavailable"), inArray(work.failureDetail, ["publication_plan_stale", "publication_source_unavailable"])),
     ))).groupBy(work.failureCode, work.failureDetail);
-  const quarantinedByReason = { invalidSelection: 0, missingAuthority: 0 };
+  const quarantinedByReason = { invalidSelection: 0, missingAuthority: 0, stalePlan: 0, unavailableSource: 0 };
   for (const reason of reasons) {
     if (reason.code === "authority_unavailable") quarantinedByReason.missingAuthority += reason.total;
-    else quarantinedByReason.invalidSelection += reason.total;
+    else if (reason.detail === "candidate_selection_invalid") quarantinedByReason.invalidSelection += reason.total;
+    else if (reason.detail === "publication_plan_stale") quarantinedByReason.stalePlan += reason.total;
+    else if (reason.detail === "publication_source_unavailable") quarantinedByReason.unavailableSource += reason.total;
   }
   return {
     providerSucceededResultMissing,

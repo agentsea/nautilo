@@ -2,14 +2,14 @@ import { reapplyHappyDomGlobals } from "../../../../tests/bun-dom-preload";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import type { CapabilitySlug, MemoryAdminStatus, ReflectionAdminStatus, StenographerAdminStatus } from "@nautilo/types";
+import type { CapabilitySlug, MemoryAdminStatus, MemoryRecoveryRun, ReflectionAdminStatus, StenographerAdminStatus } from "@nautilo/types";
 
 let capabilities = new Set<CapabilitySlug>();
-const receipt = { requestId: "11111111-1111-4111-8111-111111111111", observedThrough: "2026-11-27T10:00:00Z",
+const receipt: MemoryRecoveryRun = { requestId: "11111111-1111-4111-8111-111111111111", observedThrough: "2026-11-27T10:00:00Z",
   stenographer: { state: "assessed" as const, queued: 2, held: 0 }, reflection: { state: "assessed" as const, queued: 8, held: 1 },
   memory: { state: "assessed" as const, queued: 1, held: 0 } };
 const recover = mock(async (_id: string) => receipt);
-const latest = mock(async (): Promise<{ run: typeof receipt | null }> => ({ run: null }));
+const latest = mock(async (): Promise<{ run: MemoryRecoveryRun | null }> => ({ run: null }));
 const getStenographer = mock(async (): Promise<StenographerAdminStatus> => stenographerFixture());
 const getReflection = mock(async (): Promise<ReflectionAdminStatus> => reflectionFixture());
 const getMemory = mock(async (): Promise<MemoryAdminStatus> => memoryFixture());
@@ -102,6 +102,28 @@ describe("MemoryRecoveryCard", () => {
     await waitFor(() => expect(view.getByRole("status").textContent).toContain("8 queued · 1 held at request"));
     expect(recover).toHaveBeenCalledTimes(2);
     expect(recover.mock.calls[0]?.[0]).toBe(recover.mock.calls[1]?.[0]);
+  });
+
+  test("reports retired summaries independently of newly queued source work", async () => {
+    latest.mockImplementation(async () => ({ run: {
+      ...receipt,
+      reflection: { state: "assessed", queued: 3, held: 2, derivedRepair: { retired: 4, sourcesQueued: 3 } },
+    } }));
+    const view = show();
+    await waitFor(() => expect(view.getByRole("status").textContent).toContain(
+      "3 queued · 2 held at request. Generated summaries retired: 4. Source records queued for rebuilding: 3.",
+    ));
+  });
+
+  test("explains quarantines even after provider holds have cleared", () => {
+    const summary = summarizeReflection({ ...reflectionFixture(),
+      current: { ...reflectionFixture().current, quarantined: 5 },
+      quarantinedByReason: { invalidSelection: 0, missingAuthority: 1, stalePlan: 2, unavailableSource: 2 },
+    });
+    expect(summary.state).toBe("needs_attention");
+    expect(summary.detail).toContain("1 missing current access evidence");
+    expect(summary.detail).toContain("2 with outdated publication plans");
+    expect(summary.detail).toContain("2 missing a publication source");
   });
 
   test("resolved historical failures do not keep the recovery indicators red", () => {

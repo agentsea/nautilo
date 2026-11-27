@@ -9,6 +9,8 @@ const POST_RECOVERY_ROUTE =
 const REVIEWED_MANUAL_RECOVERY_DTO_LOCATORS = new Set([
   GET_RECOVERY_ROUTE,
   POST_RECOVERY_ROUTE,
+  "http:request_response:GET /api/admin/reflection-status",
+  "http:request_response:GET /api/admin/stenographer-status",
 ]);
 
 export const REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS:
@@ -19,7 +21,7 @@ export const REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS:
     locator: GET_RECOVERY_ROUTE,
     structuralSignatures: [
       "response.body:{error:string}",
-      "response.body:{run:{memory?:{held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};observedThrough:string;reflection?:{held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};requestId:string;stenographer?:{held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"}}}",
+      "response.body:{run:{memory?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};observedThrough:string;reflection?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};requestId:string;stenographer?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"}}}",
     ],
     arbitraryPayloads: [],
   },
@@ -29,7 +31,27 @@ export const REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS:
     locator: POST_RECOVERY_ROUTE,
     structuralSignatures: [
       "response.body:{error:string}",
-      "response.body:{memory?:{held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};observedThrough:string;reflection?:{held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};requestId:string;stenographer?:{held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"}}",
+      "response.body:{memory?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};observedThrough:string;reflection?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};requestId:string;stenographer?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"}}",
+    ],
+    arbitraryPayloads: [],
+  },
+  {
+    observationId: "wire.http.request.response.get.api.admin.reflection.status.eqtoyg",
+    locator: "http:request_response:GET /api/admin/reflection-status",
+    structuralSignatures: [
+      "request.query:{recovery?:string}",
+      "response.body:{current:{backlog:number;checkpointed:number;claimed:number;complete:number;currentParentViolations:number;deferred:number;due:number;maximumAttempts:number;maximumRecoveryRound:number;oldestOverdueMs:number;quarantined:number;recoveryEligible:number;staleLeases:number;totalRecords:number};currentFailures:{attemptCount:number;errorCode:\"authority_unavailable\"|\"candidate_unavailable\"|\"embedding_unavailable\"|\"invalid_model_output\"|\"projection_unavailable\"|\"publication_unavailable\"|\"record_unavailable\"|\"retry_exhausted\"|\"unexpected_failure\";occurredAt:string;stage:\"authority_projection\"|\"organization\"|\"search_projection\"}[];generatedAt:string;health:\"degraded\"|\"delayed\"|\"healthy\";last24h:{completedWork:number;syntheticParentsCreated:number};lastCompletedAt?:string;nextRecoveryAt?:string;projections:{availableRecords:number;current:number;incompatible:number;pending:number};protectedAuthority?:{current:{awaitingEligibleDeviceAndKeys:string;awaitingRecipient:string;readyOrRunning:string;reconciliationPending:string;retirementPending:string;terminalOrStale:string;verifiedAuthority:string};dtoVersion:1;last24h:{terminalOrStale:string;verifiedAuthority:string};scope:\"authority_maintenance_only\"};providerSucceededResultMissing?:number;quarantinedByReason?:{invalidSelection:number;missingAuthority:number;stalePlan?:number;unavailableSource?:number};resumedFromSavedProposal?:number;scheduler:{amplification:\"normal\"|\"pressure\"|\"watch\";backlog:{oldestAgeMs:number;size:number};lastPoll?:{authorityElapsedMs:number;candidateElapsedMs:number;candidatesOpened:number;capacityOutcomes:number;claims:number;crossRoomCompletions:number;crossRoomPlans:number;databaseWork:number;deterministicNoChanges:number;elapsedMs:number;modelCalls:number;modelElapsedMs:number;modelFailures:number;noEffectiveAudience:number;protectedExecutionUnavailable:number;publicationElapsedMs:number;sameRoomCompletions:number;sameRoomPlans:number;searchProjectionElapsedMs:number;stalePlans:number;unsupportedAuthorityShapes:number};latency:{crossRoom:{candidate:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};endToEnd:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};model:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};publication:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};queue:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number}};sameRoom:{candidate:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};endToEnd:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};model:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};publication:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};queue:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number}}};nextEligiblePollAt?:string;pauseReason?:\"backlog_growth\"|\"elapsed_budget\"|\"recursive_amplification\"|\"repeated_failure\";recoveryIntervalMs:number;state:\"cooldown\"|\"disabled\"|\"pressure_paused\"|\"running\";window:{admitted:number;completed:number;created:number;polls:number}};stages:{authorityProjection:number;organization:number;searchProjection:number};unresolvedProviderOutcomes?:number;window:{since:string;until:string}}",
+      "response.body:{error:string}",
+    ],
+    arbitraryPayloads: [],
+  },
+  {
+    observationId: "wire.http.request.response.get.api.admin.stenographer.status.v9h5bb",
+    locator: "http:request_response:GET /api/admin/stenographer-status",
+    structuralSignatures: [
+      "request.query:{recovery?:string}",
+      "response.body:{compaction:{awaitingRooms:number;lastCompletedAt?:string;oldestOverdueMs:number;processingRooms:number;retryingRooms:number;staleLeases:number};current:{accumulatingRooms:number;caughtUpRooms:number;dueRooms:number;eligibleRooms:number;historicalCompletedRooms:number;historicalPendingRooms:number;oldestOverdueMs:number;processingRooms:number;rebuildingRooms:number;retryingRooms:number;staleLeases:number};generatedAt:string;health:\"degraded\"|\"delayed\"|\"healthy\";journal:{projectedBodyCodePointsMax?:number;projectedBodyCodePointsP50?:number;projectedBodyCodePointsP95?:number};last24h:{completedExtractionBatches:number;eventsWritten:number;extractionBatchesWithErrors:number;extractionDurationP50Ms?:number;extractionDurationP95Ms?:number;retriedExtractionBatches:number;zeroEventExtractionBatches:number};recentFailures:{attemptCount:number;errorCode:\"input_authority_unavailable\"|\"input_too_large\"|\"invalid_output\"|\"lease_lost\"|\"persistence\"|\"provider\"|\"provider_outcome_unknown\"|\"timeout\"|\"unknown\";modelId?:string;occurredAt:string;stage:\"compaction\"|\"extraction\"}[];unresolvedProviderOutcomes?:number;window:{since:string;until:string}}",
+      "response.body:{error:string}",
     ],
     arbitraryPayloads: [],
   },
@@ -212,6 +234,9 @@ export const REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE:
         "state",
         "queued",
         "held",
+        "derivedRepair",
+        "retired",
+        "sourcesQueued",
         "error",
       ],
       plaintextReason:

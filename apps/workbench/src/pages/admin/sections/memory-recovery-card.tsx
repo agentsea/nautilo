@@ -54,10 +54,12 @@ export function summarizeReflection(status: ReflectionAdminStatus): RecoverySumm
   const sourceHolds = [
     holds?.invalidSelection ? `${holds.invalidSelection.toLocaleString()} with invalid source links` : null,
     holds?.missingAuthority ? `${holds.missingAuthority.toLocaleString()} missing current access evidence` : null,
+    holds?.stalePlan ? `${holds.stalePlan.toLocaleString()} with outdated publication plans` : null,
+    holds?.unavailableSource ? `${holds.unavailableSource.toLocaleString()} missing a publication source` : null,
   ].filter(Boolean).join(" · ");
   const recovery = status.resumedFromSavedProposal === undefined
     ? undefined
-    : `${status.resumedFromSavedProposal.toLocaleString()} resumed from a saved proposal. Completed in the past 24 hours: ${status.last24h.completedWork.toLocaleString()}. Held work is excluded.${sourceHolds ? ` Quarantined: ${sourceHolds}.` : ""}`;
+    : `${status.resumedFromSavedProposal.toLocaleString()} resumed from a saved proposal. Completed in the past 24 hours: ${status.last24h.completedWork.toLocaleString()}. Held work is excluded.`;
   if (succeededWithoutResult > 0 || ambiguous > 0) {
     const reasons = [
       succeededWithoutResult > 0
@@ -69,7 +71,7 @@ export function summarizeReflection(status: ReflectionAdminStatus): RecoverySumm
     ].filter((value): value is string => value !== null).join(". ");
     return {
       state: "needs_attention",
-      detail: `${reasons}. Automatic retries are on hold.`,
+      detail: `${reasons}. Automatic retries are on hold.${sourceHolds ? ` Quarantined: ${sourceHolds}.` : ""}`,
       ...(recovery === undefined ? {} : { recovery }),
     };
   }
@@ -77,9 +79,13 @@ export function summarizeReflection(status: ReflectionAdminStatus): RecoverySumm
     const reason = status.scheduler.pauseReason?.replaceAll("_", " ");
     return { state: "paused", detail: reason ? `Automatic Reflection is paused: ${reason}.` : "Automatic Reflection is paused." };
   }
-  if (status.health === "degraded" || status.current.staleLeases > 0
+  if (status.health === "degraded" || status.current.staleLeases > 0 || status.current.quarantined > 0
     || status.current.currentParentViolations > 0 || status.currentFailures.some(({ errorCode }) => errorCode === "retry_exhausted")) {
-    return { state: "needs_attention", detail: "Recovery has unresolved or exhausted work. Reflection details show the blocking stage and reason." };
+    return {
+      state: "needs_attention",
+      detail: sourceHolds ? `Quarantined: ${sourceHolds}.` : "Reflection details show the current failures and their causes.",
+      recovery,
+    };
   }
   const active = status.current.backlog + status.current.due + status.current.claimed + status.current.checkpointed
     + status.current.recoveryEligible + status.projections.pending;
@@ -126,9 +132,12 @@ function admissionText(lane: MemoryRecoveryLaneResult | null): string {
   if (lane === null) return "Request in progress";
   if (lane.state === "paused") return "Paused by server policy";
   if (lane.state === "unavailable") return "Could not assess this processor";
-  return lane.queued || lane.held
+  const admission = lane.queued || lane.held
     ? `${lane.queued.toLocaleString()} queued · ${lane.held.toLocaleString()} held at request`
     : "No work needed a retry";
+  const repair = lane.derivedRepair;
+  if (!repair || !repair.retired) return admission;
+  return `${admission}. Generated summaries retired: ${repair.retired.toLocaleString()}. Source records queued for rebuilding: ${repair.sourcesQueued.toLocaleString()}.`;
 }
 
 export function MemoryRecoveryCard() {
@@ -207,7 +216,7 @@ export function MemoryRecoveryCard() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div><h3 className="text-sm font-semibold">Memory recovery</h3>
           <p id="memory-recovery-cost" className="mt-1 max-w-prose text-xs text-foreground-muted">
-            Recover stuck work across all Rooms using the configured <Link to="/admin#models" className="text-primary hover:underline">Server Models</Link>. Starting recovery authorizes new provider calls, including a possible second charge for an earlier attempt.
+            Recover stuck work across all Rooms using the configured <Link to="/admin#models" className="text-primary hover:underline">Server Models</Link>. Recovery can rebuild invalid generated summaries from verified sources. Starting it authorizes provider calls, including a possible second charge for an earlier attempt.
           </p>
         </div>
         <div className="flex gap-2">

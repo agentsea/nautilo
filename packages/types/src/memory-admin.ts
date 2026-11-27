@@ -65,7 +65,12 @@ export type MemoryAdminStatus = z.infer<typeof memoryAdminStatusSchema>;
 export const memoryRetryResponseSchema = z.object({ requested: count }).strict();
 
 const memoryRecoveryLaneResultSchema = z.discriminatedUnion("state", [
-  z.object({ state: z.literal("assessed"), queued: count, held: count }).strict(),
+  z.object({
+    state: z.literal("assessed"),
+    queued: count,
+    held: count,
+    derivedRepair: z.object({ retired: count, sourcesQueued: count }).strict().optional(),
+  }).strict(),
   z.object({ state: z.literal("paused") }).strict(),
   z.object({ state: z.literal("unavailable") }).strict(),
 ]);

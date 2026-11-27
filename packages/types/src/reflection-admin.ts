@@ -161,6 +161,7 @@ export const reflectionAdminStatusSchema = z.object({
   providerSucceededResultMissing: nonNegativeInteger.optional(),
   quarantinedByReason: z.object({
     invalidSelection: nonNegativeInteger, missingAuthority: nonNegativeInteger,
+    stalePlan: nonNegativeInteger.optional(), unavailableSource: nonNegativeInteger.optional(),
   }).strict().optional(),
   unresolvedProviderOutcomes: nonNegativeInteger.optional(),
   /** Normal-worker resumptions from a durable saved proposal in this window.

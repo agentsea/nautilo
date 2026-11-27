@@ -52,15 +52,24 @@ describe("manual Memory recovery encryption review", () => {
   });
 
   test("declares the exact closed GET and POST wire shapes", () => {
-    expect(REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS).toHaveLength(2);
+    expect(REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS).toHaveLength(4);
     expect(REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS.map((entry) =>
       entry.locator
     )).toEqual([
       "http:request_response:GET /api/admin/memory-recovery",
       "http:request_response:POST /api/admin/memory-recovery",
+      "http:request_response:GET /api/admin/reflection-status",
+      "http:request_response:GET /api/admin/stenographer-status",
     ]);
     for (const declaration of REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS) {
       expect(declaration.arbitraryPayloads).toEqual([]);
+      if (declaration.locator.endsWith("-status")) {
+        expect(declaration.structuralSignatures).toContain("request.query:{recovery?:string}");
+        continue;
+      }
+      expect(declaration.structuralSignatures?.join("\n")).toContain(
+        "derivedRepair?:{retired:number;sourcesQueued:number}",
+      );
       expect(declaration.structuralSignatures?.join("\n")).toContain(
         "observedThrough:string",
       );
