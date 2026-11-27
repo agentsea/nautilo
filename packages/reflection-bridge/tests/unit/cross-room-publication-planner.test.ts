@@ -442,6 +442,79 @@ describe("exact cross-Room publication planner", () => {
       : coordinate.logicalSourceRef)).toEqual(["record:a", "memory:one"]);
   });
 
+  test("accepts exact revision-zero Memory repair evidence and rejects malformed revisions", async () => {
+    const planForRevision = (observedRevision: string) => {
+      const source = {
+        sourceKind: "memory" as const,
+        logicalSourceRef: "memory:zero",
+        observedRevision,
+        observedContentFingerprint: "fingerprint:memory:zero:0",
+        terminalAuthorityLeafHandle: "namespace:memory",
+        authorityBearing: true,
+      };
+      return planner({ sourceAuthorityHumanRefs: ["human:alice"] }).planDependencyLoss({
+        predecessor: {
+          recordRef: "record:a",
+          lifecycle: "current",
+          structuralHeight: 1,
+          processingGeneration: 1,
+          semantic: {
+            observedContentFingerprint: "fingerprint:record:a",
+            posture: "derived",
+            statement: "Old parent.",
+            sourceDependencies: [source],
+            anchors: [],
+            childRecordRefs: [],
+            producer: { producerRef: "reflection", policyVersion: "v1" },
+            terminalAuthorityLeafHandles: ["namespace:a"],
+          },
+        },
+        proposal: {
+          operation: "supersede_parent",
+          parentRecordRef: "record:a",
+          statement: "Remaining revision-zero source evidence.",
+          childRecordRefs: [],
+          sourceDependencies: [source],
+        },
+        modelExposureDependencies: [{
+          kind: "source",
+          sourceKind: source.sourceKind,
+          logicalSourceRef: source.logicalSourceRef,
+          observedRevision: source.observedRevision,
+          observedContentFingerprint: source.observedContentFingerprint,
+          terminalAuthorityLeafHandle: source.terminalAuthorityLeafHandle,
+        }],
+        idempotencyKey: `sleep-dependency-loss:record:a:memory:${observedRevision}`,
+      });
+    };
+
+    const result = await planForRevision("0");
+    expect(result.status).toBe("planned");
+    if (result.status !== "planned") return;
+    expect(result.plan.selectedInputs[1]).toMatchObject({
+      kind: "source",
+      logicalSourceRef: "memory:zero",
+      contentGeneration: 0,
+      representationGeneration: 1,
+      authorityGeneration: 1,
+    });
+    expect(result.plan.modelExposureDependencies).toEqual([{
+      kind: "source",
+      sourceKind: "memory",
+      logicalSourceRef: "memory:zero",
+      observedRevision: "0",
+      observedContentFingerprint: "fingerprint:memory:zero:0",
+      terminalAuthorityLeafHandle: "namespace:memory",
+    }]);
+
+    for (const observedRevision of ["-1", "00", "0.5", "revision-zero"]) {
+      expect(await planForRevision(observedRevision)).toEqual({
+        status: "unavailable",
+        failureDetail: "publication_plan_invalid",
+      });
+    }
+  });
+
   test("materializes only the selected dependencies' Human intersection", async () => {
     const result = await planner().plan({
       applicationPlanToken: token,

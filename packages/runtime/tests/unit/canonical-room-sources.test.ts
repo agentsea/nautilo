@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import type {
   CanonicalRecordSourceReadPort,
@@ -141,6 +141,45 @@ describe("selected Room-local Memory and Message source adapter", () => {
         },
       }],
     });
+  });
+
+  test("keeps the legacy fingerprint while selecting revision-zero Memory explicitly", async () => {
+    const legacy = { ...MEMORY_ROW, contentRevision: 0 };
+    const expectedFingerprint = createHmac("sha256", new Uint8Array(32).fill(9));
+    for (const value of [
+      "nautilo/reflection/ordinary-memory-observation/v1",
+      legacy.id, "legacy", legacy.type, legacy.content,
+    ]) {
+      expectedFingerprint.update(`${Buffer.byteLength(value, "utf8")}:${value}`, "utf8");
+    }
+    const fingerprint = `hmac-sha256:${expectedFingerprint.digest("base64url")}`;
+    const source = adapter({ ordinary: queries({
+      searchMemories: async () => [{ ...legacy, score: 0.9 }],
+      readMemory: async () => legacy,
+    }) });
+    const search = await source.search({ roomAnchorRef: ROOM, embedding: QUERY_EMBEDDING, limit: 4 });
+    const opened = await source.open({ candidate: {
+      kind: "memory", memoryRef: MEMORY, logicalSourceRef: `memory:${MEMORY}`, score: 0.9,
+      contentRevision: 0, embeddingRevision: 0, embeddingProvenance: QUERY_EMBEDDING.provenance,
+      updatedAtCoordinate: legacy.updatedAtCoordinate, authorityNamespaceRefs: [NAMESPACE],
+      audience: { humanRefs: [], includesPublicBoundary: false },
+      readNamespaceRef: NAMESPACE, readBindingRef: BINDING,
+    } });
+    const observation = { observedRevision: "0", observedContentFingerprint: fingerprint };
+    expect(search).toMatchObject({ status: "available", candidates: [{
+      snapshot: observation, dependency: observation,
+    }] });
+    expect(opened).toMatchObject({ status: "available", snapshot: observation, dependency: observation });
+    if (opened.status !== "available") throw new Error("missing legacy Memory");
+    const { observedRevision: _revision, ...oldDependency } = opened.dependency;
+    const read = (target: typeof source, dependency: typeof oldDependency) => target.readExact({
+      dependency, evidenceBindingRef: BINDING, returnedBytesMaximum: 8_192,
+    });
+    expect(await read(source, oldDependency)).toMatchObject({ status: "available" });
+    expect(await read(source, opened.dependency)).toMatchObject({ status: "available" });
+    const changedContent = adapter({ ordinary: queries({ readMemory: async () => ({ ...legacy, content: "Edited" }) }) });
+    expect(await read(changedContent, oldDependency)).toEqual({ status: "changed" });
+    expect(await read(adapter(), oldDependency)).toEqual({ status: "changed" });
   });
 
   test("drops a Memory changed after vector candidate discovery", async () => {

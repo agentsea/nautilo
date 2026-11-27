@@ -265,7 +265,7 @@ OrganizerCrossRoomPublicationFencePort {
       const generation = Number(exposure.observedRevision);
       if (
         !Number.isSafeInteger(generation)
-        || exposure.sourceKind === "memory" && generation < 1
+        || generation < 0
       ) {
         return { status: "unavailable", failureDetail: "publication_plan_invalid" };
       }

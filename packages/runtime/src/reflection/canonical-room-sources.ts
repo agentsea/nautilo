@@ -89,7 +89,8 @@ export function createHmacOrdinarySourceFingerprintPort(
       for (const value of [
         "nautilo/reflection/ordinary-memory-observation/v1",
         row.id,
-        memoryRevision(row) ?? "legacy",
+        // Keep the fingerprint of already-published revision-zero evidence stable.
+        row.contentRevision === 0 ? "legacy" : String(row.contentRevision),
         row.type,
         row.content,
       ]) {
@@ -101,12 +102,6 @@ export function createHmacOrdinarySourceFingerprintPort(
       return `hmac-sha256:${hmac.digest("base64url")}`;
     },
   });
-}
-
-function memoryRevision(row: Pick<OrdinaryMemorySourceRow, "contentRevision">): string | undefined {
-  return row.contentRevision > 0
-    ? String(row.contentRevision)
-    : undefined;
 }
 
 export function reflectionMessageSourceFingerprint(row: Pick<OrdinaryMessageSourceRow, "id" | "editRevision" | "content">): string {
@@ -283,17 +278,17 @@ CrossRoomMemoryOpenPort {
       if (
         current === null
         || current.tier > 2
-        || memoryRevision(current) !== memoryRevision(row)
+        || current.contentRevision !== row.contentRevision
         || this.ports.fingerprints.memory(current)
           !== this.ports.fingerprints.memory(row)
       ) continue;
-      const observedRevision = memoryRevision(row);
+      const observedRevision = String(row.contentRevision);
       const observedContentFingerprint = this.ports.fingerprints.memory(row);
       const logicalSourceRef = `memory:${row.id}`;
       const dependency: DurableSourceDependency = {
         sourceKind: MEMORY_SOURCE_KIND,
         logicalSourceRef,
-        ...(observedRevision === undefined ? {} : { observedRevision }),
+        observedRevision,
         observedContentFingerprint,
         terminalAuthorityLeafHandle: binding.namespaceId,
         authorityBearing: true,
@@ -312,7 +307,7 @@ CrossRoomMemoryOpenPort {
           lifecycle: "current",
           sourceOwnedKind: MEMORY_SOURCE_KIND,
           observedLogicalObjectRef: logicalSourceRef,
-          ...(observedRevision === undefined ? {} : { observedRevision }),
+          observedRevision,
         },
         dependency,
       });
@@ -376,12 +371,12 @@ CrossRoomMemoryOpenPort {
       || bytes(row.content)
         > RECORD_SEARCH_POLICY_V1.recordStatementMaximumUtf8Bytes
     ) return { status: "stale" };
-    const observedRevision = memoryRevision(row);
+    const observedRevision = String(row.contentRevision);
     const observedContentFingerprint = this.ports.fingerprints.memory(row);
     const dependency: DurableSourceDependency = {
       sourceKind: MEMORY_SOURCE_KIND,
       logicalSourceRef: input.candidate.logicalSourceRef,
-      ...(observedRevision === undefined ? {} : { observedRevision }),
+      observedRevision,
       observedContentFingerprint,
       terminalAuthorityLeafHandle: binding.namespaceId,
       authorityBearing: true,
@@ -401,7 +396,7 @@ CrossRoomMemoryOpenPort {
         lifecycle: "current",
         sourceOwnedKind: MEMORY_SOURCE_KIND,
         observedLogicalObjectRef: input.candidate.logicalSourceRef,
-        ...(observedRevision === undefined ? {} : { observedRevision }),
+        observedRevision,
       },
     };
   }
@@ -420,7 +415,7 @@ CrossRoomMemoryOpenPort {
     if (row === null) return { status: "unavailable" };
     if (
       row.tier > 2
-      || dependency.observedRevision !== memoryRevision(row)
+      || (dependency.observedRevision ?? "0") !== String(row.contentRevision)
       || dependency.observedContentFingerprint !== this.ports.fingerprints.memory(row)
     ) return { status: "changed" };
     if (bytes(row.content) > maximumBytes) return { status: "unavailable" };
