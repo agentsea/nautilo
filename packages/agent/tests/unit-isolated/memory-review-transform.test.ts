@@ -70,10 +70,43 @@ describe("Memory transform completion", () => {
   test("only explicit successful no-change completes an empty proposal", async () => {
     setup();
     const options = { workId: "work", modelId: "model", memoryAccessEnvelope: envelope };
-    const good = await prepareMemoryReview([], { ...options, invokeModel: model([new AIMessage("Nothing to save.")]) });
-    expect(good.status).toBe("prepared");
-    if (good.status === "prepared") expect(good.proposal.operations).toEqual([]);
-    expect(await prepareMemoryReview([], { ...options, invokeModel: model([new AIMessage("")]) })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+    for (const content of [
+      "Nothing to save.",
+      [{ type: "text" as const, text: "Nothing to save." }],
+    ]) {
+      const result = await prepareMemoryReview([], {
+        ...options,
+        invokeModel: model([new AIMessage({ content })]),
+      });
+      expect(result.status).toBe("prepared");
+      if (result.status === "prepared") expect(result.proposal.operations).toEqual([]);
+    }
+  });
+  test("rejects malformed, extra, non-text, and invalid-call no-change responses", async () => {
+    setup();
+    const options = { workId: "work", modelId: "model", memoryAccessEnvelope: envelope };
+    const invalidContents = [
+      "",
+      [],
+      [{ type: "text" as const, text: "" }],
+      [{ type: "text" as const, text: "Nothing to save." }, { type: "text" as const, text: "Extra" }],
+      [{ type: "image_url" as const, image_url: { url: "data:image/png;base64," } }],
+      [{ type: "text" as const, text: 42 }],
+    ];
+    for (const content of invalidContents) {
+      const result = await prepareMemoryReview([], {
+        ...options,
+        invokeModel: model([new AIMessage({ content: content as BaseMessage["content"] })]),
+      });
+      expect(result).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+    }
+    expect(await prepareMemoryReview([], {
+      ...options,
+      invokeModel: model([new AIMessage({
+        content: [{ type: "text", text: "Nothing to save." }],
+        invalid_tool_calls: [{ name: "manage_memory", args: "{", error: "invalid" }],
+      })]),
+    })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
   });
   test("reports content-free exposure before the next paid call and publication", async () => {
     setup();
