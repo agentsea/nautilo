@@ -57,6 +57,9 @@ export function summarizeReflection(status: ReflectionAdminStatus): RecoverySumm
     holds?.stalePlan ? `${holds.stalePlan.toLocaleString()} with outdated publication plans` : null,
     holds?.unavailableSource ? `${holds.unavailableSource.toLocaleString()} missing a publication source` : null,
   ].filter(Boolean).join(" · ");
+  const planAction = holds?.stalePlan
+    ? " Recover all memory can request one fresh model attempt per eligible job using the current records."
+    : "";
   const recovery = status.resumedFromSavedProposal === undefined
     ? undefined
     : `${status.resumedFromSavedProposal.toLocaleString()} resumed from a saved proposal. Completed in the past 24 hours: ${status.last24h.completedWork.toLocaleString()}. Held work is excluded.`;
@@ -71,7 +74,7 @@ export function summarizeReflection(status: ReflectionAdminStatus): RecoverySumm
     ].filter((value): value is string => value !== null).join(". ");
     return {
       state: "needs_attention",
-      detail: `${reasons}. Automatic retries are on hold.${sourceHolds ? ` Quarantined: ${sourceHolds}.` : ""}`,
+      detail: `${reasons}. Automatic retries are on hold.${sourceHolds ? ` Quarantined: ${sourceHolds}.` : ""}${planAction}`,
       ...(recovery === undefined ? {} : { recovery }),
     };
   }
@@ -83,7 +86,7 @@ export function summarizeReflection(status: ReflectionAdminStatus): RecoverySumm
     || status.current.currentParentViolations > 0 || status.currentFailures.some(({ errorCode }) => errorCode === "retry_exhausted")) {
     return {
       state: "needs_attention",
-      detail: sourceHolds ? `Quarantined: ${sourceHolds}.` : "Reflection details show the current failures and their causes.",
+      detail: sourceHolds ? `Quarantined: ${sourceHolds}.${planAction}` : "Reflection details show the current failures and their causes.",
       recovery,
     };
   }

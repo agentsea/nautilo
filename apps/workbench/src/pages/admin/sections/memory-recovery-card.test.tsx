@@ -164,6 +164,7 @@ describe("MemoryRecoveryCard", () => {
     expect(summary.state).toBe("needs_attention");
     expect(summary.detail).toContain("1 missing current access evidence");
     expect(summary.detail).toContain("2 with outdated publication plans");
+    expect(summary.detail).toContain("one fresh model attempt per eligible job");
     expect(summary.detail).toContain("2 missing a publication source");
   });
 
