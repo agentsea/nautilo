@@ -89,6 +89,10 @@ import { assertTaskFundingAdmission, TaskFundingError } from "@nautilo/runtime";
 import { getLatestResumableTaskRun, type NewTask, type Task } from "@nautilo/db";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import { memoryStatusRoutes } from "./routes/memory-status";
+import { createManualMemoryRecovery } from "./lib/manual-memory-recovery";
+import { requestManualJournalRecovery } from "./lib/request-manual-journal-recovery";
+import { requestManualReflectionRecovery } from "./reflection/request-manual-recovery";
+import { MemoryReviewManualRecoveryUnavailableError } from "./lib/memory-review-runtime";
 import { createAutomaticMemoryRecovery } from "./lib/memory-recovery-service";
 import {
   createForegroundMemoryEffectRecovery,
@@ -670,6 +674,7 @@ import {
   queryReflectionAdminStatus,
   readReflectionRecoveryDiagnostics,
   getAccountSecurityRowByUserId,
+  acquireEncryptionConsumptionFence,
   getEncryptionTransitionPolicy,
   recordStrictShadowBoundaryHealth,
   retireLegacyUnsupportedTaskObserverHealth,
@@ -2581,7 +2586,38 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   costsRoutes(app);
-  memoryStatusRoutes(app, memoryReviewRuntime);
+  const manualMemoryRecovery = createManualMemoryRecovery({
+    db: getServerDirectDb,
+    assertAvailable: () => maintenanceGate.assertAcceptingNewWork(),
+    onError: processor => app.log.warn({ processor }, "Memory recovery could not assess processor"),
+    recover: {
+      stenographer: async input => {
+        if ((await acquireEncryptionConsumptionFence(input.db)).mode !== "plaintext_only") return { state: "paused" };
+        return { state: "assessed", ...await requestManualJournalRecovery({ ...input, modelId: resolveStenographerModel() }) };
+      },
+      reflection: async input => {
+        if (!(await getServerContextConfig(input.db)).reflectionSleepEnabled
+          || (await acquireEncryptionConsumptionFence(input.db)).mode !== "plaintext_only") return { state: "paused" };
+        return { state: "assessed", ...await requestManualReflectionRecovery({ ...input, modelId: resolveReflectionModel() }) };
+      },
+      memory: async input => {
+        try {
+          return { state: "assessed", ...await memoryReviewRuntime.requestManualRecovery(input) };
+        } catch (error) {
+          if (error instanceof MemoryReviewManualRecoveryUnavailableError && error.code === "paused") return { state: "paused" };
+          throw error;
+        }
+      },
+    },
+  });
+  memoryStatusRoutes(app, { ...memoryReviewRuntime, recovery: {
+    latest: () => manualMemoryRecovery.latest(),
+    request: async input => {
+      const run = await manualMemoryRecovery.request(input);
+      if (run.memory?.state === "assessed" && run.memory.queued > 0) memoryReviewRuntime.wake();
+      return run;
+    },
+  } });
   stenographerStatusRoutes(app, {
     queryStatus: (input) =>
       queryStenographerAdminStatus(input, getServerDirectDb()),

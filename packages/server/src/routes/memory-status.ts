@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { memoryAdminStatusSchema, memoryRetryResponseSchema, type MemoryAdminStatus } from "@nautilo/types";
+import { memoryAdminStatusSchema, memoryRetryResponseSchema, memoryRecoveryRunSchema, type MemoryRecoveryRun, type MemoryAdminStatus } from "@nautilo/types";
 import { getUserCapabilities } from "@nautilo/trust";
 import { z } from "zod";
 import { STENOGRAPHER_STATUS_WINDOW_MS } from "./stenographer-status";
@@ -11,6 +11,10 @@ export interface MemoryStatusRoutesDeps {
   requestModelRecovery(input: {
     workId: string; headTurnId: string; authorizedBy: string; now: Date;
   }): Promise<"queued" | "already_requested" | "blocked">;
+  recovery: {
+    latest(): Promise<MemoryRecoveryRun | null>;
+    request(input: { requestId: string; authorizedBy: string; now: Date }): Promise<MemoryRecoveryRun>;
+  };
   getCapabilities?: typeof getUserCapabilities;
   now?: () => Date;
 }
@@ -45,6 +49,26 @@ export function memoryStatusRoutes(app: FastifyInstance, deps: MemoryStatusRoute
       })));
     } catch {
       return reply.code(503).send({ error: "Memory processing status unavailable" });
+    }
+  });
+  app.get("/api/admin/memory-recovery", async (request, reply) => {
+    if (!await authorize(request, reply, "read_server_settings")) return;
+    try {
+      return reply.send({ run: memoryRecoveryRunSchema.nullable().parse(await deps.recovery.latest()) });
+    } catch {
+      return reply.code(503).send({ error: "Memory recovery status unavailable" });
+    }
+  });
+  app.post("/api/admin/memory-recovery", async (request, reply) => {
+    if (!await authorize(request, reply, "manage_server_operations")) return;
+    const input = z.object({ requestId: z.string().uuid(), confirmBillableRerun: z.literal(true) }).strict().safeParse(request.body);
+    if (!input.success) return reply.code(400).send({ error: "Recovery request ID and billable rerun confirmation required" });
+    try {
+      const result = await deps.recovery.request({ requestId: input.data.requestId, authorizedBy: request.sessionUserId!,
+        now: (deps.now ?? (() => new Date()))() });
+      return reply.code(202).send(memoryRecoveryRunSchema.parse(result));
+    } catch {
+      return reply.code(503).send({ error: "Recovery request could not be confirmed. Retry with the same request ID." });
     }
   });
   app.post("/api/admin/memory-review-recovery", async (request, reply) => {

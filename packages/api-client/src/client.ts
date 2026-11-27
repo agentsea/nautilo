@@ -70,6 +70,8 @@ import {
 import {
   memoryAdminStatusSchema,
   memoryRetryResponseSchema,
+  memoryRecoveryRunSchema,
+  type MemoryRecoveryRun,
   type MemoryAdminStatus,
   connectedWebAccountCancelLoginResponseSchema,
   connectedWebAccountCancelReadResponseSchema,
@@ -4684,6 +4686,16 @@ export class NautiloApiClient {
         method: "POST", path: "/api/admin/memory-retry", body: {},
         schema: memoryRetryResponseSchema,
         defaultErrorPrefix: "POST /api/admin/memory-retry",
+      }),
+    },
+    memoryRecovery: {
+      latest: async (): Promise<{ run: MemoryRecoveryRun | null }> => this.request({
+        path: "/api/admin/memory-recovery", schema: z.object({ run: memoryRecoveryRunSchema.nullable() }),
+        defaultErrorPrefix: "GET /api/admin/memory-recovery",
+      }),
+      run: async (requestId: string): Promise<MemoryRecoveryRun> => this.request({
+        method: "POST", path: "/api/admin/memory-recovery", body: { requestId, confirmBillableRerun: true },
+        schema: memoryRecoveryRunSchema, defaultErrorPrefix: "POST /api/admin/memory-recovery",
       }),
     },
     stenographerStatus: {
