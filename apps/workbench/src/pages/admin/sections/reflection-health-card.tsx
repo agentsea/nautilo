@@ -288,6 +288,9 @@ function StatusBody({
         </p>
       </div>
 
+      {status.providerSucceededResultMissing === undefined && (
+        <p className="mt-4 text-xs text-foreground-muted">Detailed recovery evidence is unavailable.</p>
+      )}
       {(status.unresolvedProviderOutcomes ?? 0) > 0 ? (
         <p className="mt-4 text-xs text-error">
           Unresolved provider outcomes ({status.unresolvedProviderOutcomes})

@@ -48,6 +48,17 @@ export function summarizeStenographer(status: StenographerAdminStatus): Recovery
 }
 
 export function summarizeReflection(status: ReflectionAdminStatus): RecoverySummary {
+  const summary = reflectionHealth(status);
+  if (status.providerSucceededResultMissing !== undefined) return summary;
+  const held = status.unresolvedProviderOutcomes;
+  return {
+    ...summary,
+    ...(held && { state: "needs_attention", detail: `${held.toLocaleString()} Reflection ${held === 1 ? "job is" : "jobs are"} held pending provider reconciliation.` }),
+    recovery: "Detailed recovery evidence is unavailable.",
+  };
+}
+
+function reflectionHealth(status: ReflectionAdminStatus): RecoverySummary {
   const succeededWithoutResult = status.providerSucceededResultMissing ?? 0;
   const unresolved = status.unresolvedProviderOutcomes ?? 0;
   const ambiguous = Math.max(0, unresolved - succeededWithoutResult);

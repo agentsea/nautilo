@@ -256,6 +256,14 @@ describe("MemoryRecoveryCard", () => {
     expect(summarizeReflection({ ...reflectionFixture(), scheduler: { ...reflectionFixture().scheduler, state: "pressure_paused", pauseReason: "repeated_failure" } }).state).toBe("paused");
   });
 
+  test("retains the canonical Reflection hold count when its detailed evidence is unavailable", async () => {
+    getReflection.mockImplementation(async () => ({ ...reflectionFixture(), unresolvedProviderOutcomes: 3 }));
+    const view = show();
+    await waitFor(() => expect(view.getByText(/3 Reflection jobs are held pending provider reconciliation/)).toBeTruthy());
+    expect(view.getByText("Detailed recovery evidence is unavailable.")).toBeTruthy();
+    expect(view.queryByText(/unknown provider outcome/)).toBeNull();
+  });
+
   test("distinguishes settled success with no durable result from an unknown provider outcome", async () => {
     getReflection.mockImplementationOnce(async () => ({
       ...reflectionFixture(),
