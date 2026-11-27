@@ -14,13 +14,14 @@ const locators = REVIEWED_MEMORY_RECOVERY_SOURCE_ALARMS.map(
 );
 
 describe("reviewed Memory recovery source alarms", () => {
-  test("closes only the three bounded recovery warnings", async () => {
+  test("closes only the four bounded recovery warnings", async () => {
     expect(locators).toEqual([
       "packages/server/src/app.ts#log_emitter:4653f2598ab1da64:1",
       "packages/server/src/app.ts#log_emitter:4653f2598ab1da64:2",
       "packages/server/src/app.ts#log_emitter:52fc75dba775a07f:1",
+      "packages/server/src/routes/reflection-status.ts#log_emitter:a90c23f4818770fe:3",
     ]);
-    expect(new Set(locators).size).toBe(3);
+    expect(new Set(locators).size).toBe(4);
 
     const scan = await scanSourceAlarms({
       repoRoot,
@@ -33,13 +34,14 @@ describe("reviewed Memory recovery source alarms", () => {
       "log.warn(",
       "log.warn(",
       "log.warn(",
+      "logError(",
     ]);
     expect(inspectSourceAlarmReviews(
       owned,
       REVIEWED_MEMORY_RECOVERY_SOURCE_ALARMS,
     )).toMatchObject({
       errors: [],
-      counts: { declaration: 0, baselineDebt: 0, reviewedExclusion: 3, unmapped: 0 },
+      counts: { declaration: 0, baselineDebt: 0, reviewedExclusion: 4, unmapped: 0 },
     });
 
     for (const review of REVIEWED_MEMORY_RECOVERY_SOURCE_ALARMS) {
@@ -50,6 +52,8 @@ describe("reviewed Memory recovery source alarms", () => {
   });
 
   test("anchors the complete emitted shapes without caught errors", async () => {
+    const reflectionStatus = await Bun.file(resolve(repoRoot, "packages/server/src/routes/reflection-status.ts")).text();
+    expect(reflectionStatus).toMatch(/logError\("\[reflection-status\] supplemental recovery details unavailable", \{\s*failureCode: "reflection_recovery_diagnostics_unavailable",\s*\}\);/);
     const app = await Bun.file(resolve(repoRoot, "packages/server/src/app.ts")).text();
     expect(app).toContain(
       'app.log.warn("[stenographer] automatic provider recovery scan failed")',

@@ -62,20 +62,6 @@ export function reflectionStatusRoutes(
     }
   });
   const now = deps.now ?? (() => new Date());
-  const recoverySchema = reflectionAdminStatusSchema.pick({
-    providerSucceededResultMissing: true, resumedFromSavedProposal: true, quarantinedByReason: true,
-  }).strict();
-  async function recoveryDetails(input: ReflectionStatusQueryInput) {
-    if (!deps.queryRecoveryStatus) return undefined;
-    try {
-      return recoverySchema.parse(await deps.queryRecoveryStatus(input));
-    } catch {
-      logError("[reflection-status] supplemental recovery details unavailable", {
-        failureCode: "reflection_recovery_diagnostics_unavailable",
-      });
-      return undefined;
-    }
-  }
 
   app.get<{ Querystring: { recovery?: string } }>("/api/admin/reflection-status", async (request, reply) => {
     if (!(await requireServerSettingsRead(request, reply, hasCapability))) return;
@@ -88,7 +74,7 @@ export function reflectionStatusRoutes(
       const [ordinaryStatus, protectedAuthority, recoveryStatus] = await Promise.all([
         deps.queryStatus({ ...input, ...(includeRecovery ? { includeRecovery } : {}) }),
         deps.queryAuthorityStatus?.(input),
-        includeRecovery ? recoveryDetails(input) : undefined,
+        includeRecovery ? recoveryDetails(deps.queryRecoveryStatus, input) : undefined,
       ]);
       status = {
         ...ordinaryStatus,
@@ -119,4 +105,21 @@ export function reflectionStatusRoutes(
     }
     return reply.send(parsed.data);
   });
+}
+
+const recoverySchema = reflectionAdminStatusSchema.pick({
+  providerSucceededResultMissing: true, resumedFromSavedProposal: true, quarantinedByReason: true,
+}).strict();
+async function recoveryDetails(
+  query: ReflectionStatusRoutesDeps["queryRecoveryStatus"], input: ReflectionStatusQueryInput,
+) {
+  if (!query) return undefined;
+  try {
+    return recoverySchema.parse(await query(input));
+  } catch {
+    logError("[reflection-status] supplemental recovery details unavailable", {
+      failureCode: "reflection_recovery_diagnostics_unavailable",
+    });
+    return undefined;
+  }
 }
