@@ -146,7 +146,7 @@ describe("manual Memory-review recovery", () => {
     });
     expect(manualReviewRecoveryBinding({ kind: "service", modelId: "legacy" }, MODEL))
       .toEqual({ kind: "service", modelId: MODEL });
-    expect(manualReviewRecoveryBinding(null, MODEL)).toEqual({ kind: "service", modelId: MODEL });
+    expect(manualReviewRecoveryBinding(null, MODEL)).toBeNull();
     expect(manualReviewRecoveryBinding({
       version: 1, kind: "human", role: "memoryReview", modelId: "personal",
       inputCommitment: COMMITMENT, humanUserId: "human", preferenceRevision: 1,
@@ -199,6 +199,7 @@ describe("manual Memory-review recovery", () => {
   test("holds publication uncertainty, personal work, and failures newer than the observation", async () => {
     const cases = [
       turn({ failurePhase: "publication", failureCode: "publication_uncertain" }),
+      turn({ acceptedModelBinding: null }),
       turn({ acceptedModelBinding: {
         version: 1, kind: "human", role: "memoryReview", modelId: "personal",
         inputCommitment: COMMITMENT, humanUserId: "human", preferenceRevision: 1,
@@ -215,6 +216,7 @@ describe("manual Memory-review recovery", () => {
         maintenanceAccepting: async () => true,
       })).toEqual({ queued: 0, held: 1 });
       expect(fixture.inserted).toHaveLength(0);
+      expect(fixture.updated).toHaveLength(0);
     }
   });
 

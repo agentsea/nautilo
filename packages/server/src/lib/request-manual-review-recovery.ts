@@ -60,7 +60,9 @@ export function manualReviewRecoveryBinding(
   value: Turn["acceptedModelBinding"],
   modelId: string,
 ): Turn["acceptedModelBinding"] | null {
-  if (value === null) return { kind: "service", modelId };
+  // A missing historical binding proves neither service funding nor the
+  // Human's personal payer. Recovery must not manufacture server authority.
+  if (value === null) return null;
   const legacy = legacyServiceBinding(value);
   if (legacy !== null) return { kind: "service", modelId };
   let parsed: MemoryOperationBinding;

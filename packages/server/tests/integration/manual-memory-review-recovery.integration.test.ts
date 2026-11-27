@@ -93,6 +93,7 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
     { scope: "invalid", binding: { kind: "service", modelId: oldModel }, code: "invalid_proposal", phase: "model", at: failedAt },
     { scope: "publication", binding: binding("P"), code: "publication_uncertain", phase: "publication", at: failedAt },
     { scope: "personal", binding: personal, code: "provider_outcome_unknown", phase: "model", at: failedAt },
+    { scope: "unbound", binding: null, code: "provider_outcome_unknown", phase: "model", at: failedAt },
     { scope: "newer", binding: binding("N"), code: "invalid_proposal", phase: "model", at: newerFailureAt },
   ].map((value, index) => ({
     ...value,
@@ -126,7 +127,7 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       firstMessageId: value.firstMessageId,
       hasHuman: 1,
       state: "completed" as const,
-      acceptedModelBinding: value.binding as MemoryOperationBinding,
+      acceptedModelBinding: value.binding as MemoryOperationBinding | null,
       attemptId: value.attemptId,
       failurePhase: value.phase,
       failureCode: value.code,
@@ -178,8 +179,8 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       targetMode: "shadow_encryption",
       targetShadowBehavior: "fallback",
     });
-    expect(await request(observedThrough)).toEqual({ queued: 2, held: 3 });
-    expect(await request(observedThrough)).toEqual({ queued: 0, held: 3 });
+    expect(await request(observedThrough)).toEqual({ queued: 2, held: 4 });
+    expect(await request(observedThrough)).toEqual({ queued: 0, held: 4 });
     const maintenance = new MaintenanceController({ db });
     const maintenanceOperationId = randomUUID();
     await maintenance.enterDraining({ operationId: maintenanceOperationId });
@@ -209,16 +210,46 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       targetMode: "shadow_encryption",
       targetShadowBehavior: "fallback",
     });
-    expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 2 });
-    expect(await request(newerFailureAt)).toEqual({ queued: 0, held: 2 });
+    expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 3 });
+    expect(await request(newerFailureAt)).toEqual({ queued: 0, held: 3 });
 
     const recoveries = await db.select().from(memoryReviewModelRecoveries)
       .where(inArray(memoryReviewModelRecoveries.workId, fixtures.map(value => value.generationId)));
     expect(recoveries).toHaveLength(3);
-    const held = new Set<string>(fixtures.filter(value => value.scope === "publication" || value.scope === "personal")
+    const held = new Set<string>(fixtures.filter(value => value.scope === "publication"
+      || value.scope === "personal" || value.scope === "unbound")
       .map(value => value.generationId));
     expect(recoveries.every(value => !held.has(value.workId)
       && value.spentAt === null && value.recoveryAttemptId === null)).toBe(true);
+    const persisted = await db.select({
+      accessScope: memoryReviewTurns.accessScope,
+      acceptedModelBinding: memoryReviewTurns.acceptedModelBinding,
+      receiptId: memoryReviewTurns.receiptId,
+    }).from(memoryReviewTurns).where(inArray(memoryReviewTurns.id, turnIds));
+    expect(persisted).toHaveLength(fixtures.length);
+    const persistedByScope = new Map(persisted.map(value => [value.accessScope, value]));
+    expect(persistedByScope.get("unbound")?.acceptedModelBinding).toBeNull();
+    expect(persistedByScope.get("personal")?.acceptedModelBinding).toEqual(personal);
+    expect(persistedByScope.get("direct")?.acceptedModelBinding).toMatchObject({
+      version: 1,
+      kind: "service",
+      role: "memoryReview",
+      inputCommitment: binding("D").inputCommitment,
+    });
+    expect(persistedByScope.get("invalid")?.acceptedModelBinding).toMatchObject({
+      kind: "service",
+    });
+    expect(persisted.every(value => value.receiptId === null)).toBe(true);
+    const receipts = await db.select({
+      id: memoryReviewReceipts.id,
+      workId: memoryReviewReceipts.workId,
+      outcome: memoryReviewReceipts.outcome,
+    }).from(memoryReviewReceipts).where(inArray(
+      memoryReviewReceipts.workId,
+      fixtures.map(value => value.generationId),
+    ));
+    expect(receipts).toHaveLength(fixtures.length);
+    expect(receipts.every(value => value.outcome === "failed")).toBe(true);
   } finally {
     if (activePolicy.mode !== originalPolicy.mode
       || activePolicy.shadowBehavior !== originalPolicy.shadowBehavior) {
