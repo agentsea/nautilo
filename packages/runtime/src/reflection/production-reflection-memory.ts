@@ -939,6 +939,9 @@ export async function createProductionReflectionMemoryRuntime(
       authorityReconciliation,
       embedding,
       searchProjections,
+      ...(input.selection.selectedRepresentation === "ordinary"
+        ? { missingTerminalDependencies: semanticWork }
+        : {}),
     }),
     bindings: bindings.semantic,
     organizerNeighbors,

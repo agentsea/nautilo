@@ -5,16 +5,19 @@ import {
   and,
   asc,
   eq,
+  exists,
   gt,
   inArray,
   isNull,
   lte,
   ne,
+  notExists,
   or,
   reflectionRecordDependencies,
   reflectionRecordAuthorityDependencies,
   reflectionRecordAuthorityReconciliations,
   reflectionRecordDependencyChangeRepairs,
+  reflectionRecordPayloadRepresentationHeads,
   reflectionRecordPublications,
   reflectionRecordSemanticWork,
   reflectionRecordSemanticWorkAdmissions,
@@ -22,6 +25,7 @@ import {
   reflectionRecordSourceChangeRepairs,
   reflectionRecordSourceDependencyIndex,
   reflectionRecords,
+  reflectionRecordSuccessors,
   sql,
 } from "@nautilo/db";
 import type {
@@ -1152,6 +1156,252 @@ export class PostgresSemanticWorkStore
       .onConflictDoNothing({
         target: reflectionRecordDependencyChangeRepairs.changeCommitment,
       }));
+  }
+
+  /**
+   * Repair one legacy gap only after readiness has opened the exact structural
+   * edge and proved its child is a terminal sunset Record without a successor.
+   * This reserves the ordinary canonical change receipt; the normal bounded
+   * repair drain remains the sole owner of structural and authority-dependent
+   * one-hop admissions, and every later lifecycle hop remains restart-safe.
+   */
+  repairMissingTerminalStructuralDependency(input: Readonly<{
+    parentRecordRef: string;
+    parentProcessingGeneration: number;
+    childRecordRef: string;
+    childProcessingGeneration: number;
+  }>): Promise<"repaired" | "replayed" | "unavailable"> {
+    assertOpaque(input.parentRecordRef, "terminal dependency parent Record reference");
+    assertOpaque(input.childRecordRef, "terminal dependency child Record reference");
+    if (
+      !Number.isSafeInteger(input.parentProcessingGeneration)
+      || input.parentProcessingGeneration < 1
+      || !Number.isSafeInteger(input.childProcessingGeneration)
+      || input.childProcessingGeneration < 1
+    ) throw new RangeError("terminal dependency generations must be positive integers");
+
+    const syntheticChangeCommitment = this.options.commitments.recordChange({
+      recordRef: input.childRecordRef,
+      changeRef: `missing-terminal:sunset:v${input.childProcessingGeneration}`,
+    });
+    const exactGenerationCommitments = [
+      syntheticChangeCommitment,
+      this.options.commitments.recordChange({
+        recordRef: input.childRecordRef,
+        changeRef:
+          `lifecycle:current:sunset:v${input.childProcessingGeneration}`,
+      }),
+      this.options.commitments.recordChange({
+        recordRef: input.childRecordRef,
+        changeRef:
+          `lifecycle:stale:sunset:v${input.childProcessingGeneration}`,
+      }),
+    ];
+    return this.options.handle.transaction(async (tx) => {
+      const priorRepair = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          change_commitment:
+            reflectionRecordDependencyChangeRepairs.changeCommitment,
+        })
+          .from(reflectionRecordDependencyChangeRepairs)
+          .where(and(
+            eq(
+              reflectionRecordDependencyChangeRepairs.changedRecordId,
+              input.childRecordRef,
+            ),
+            inArray(
+              reflectionRecordDependencyChangeRepairs.changeCommitment,
+              exactGenerationCommitments,
+            ),
+          ))
+          .limit(1)
+          .for("share"));
+      if (priorRepair.length > 0) return "replayed" as const;
+
+      const childRows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          lifecycle: reflectionRecords.lifecycle,
+          disposition: reflectionRecords.disposition,
+          processing_generation: reflectionRecords.processingGeneration,
+        })
+          .from(reflectionRecords)
+          .where(eq(reflectionRecords.recordId, input.childRecordRef))
+          .limit(1)
+          .for("update"));
+      const child = childRows[0];
+      if (
+        child === undefined
+        || child.lifecycle !== "sunset"
+        || child.disposition !== "available"
+        || child.processing_generation !== input.childProcessingGeneration
+      ) return "unavailable" as const;
+
+      const childHeads = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          representation: reflectionRecordPayloadRepresentationHeads.representation,
+        })
+          .from(reflectionRecordPayloadRepresentationHeads)
+          .where(eq(
+            reflectionRecordPayloadRepresentationHeads.recordId,
+            input.childRecordRef,
+          ))
+          .orderBy(asc(
+            reflectionRecordPayloadRepresentationHeads.representation,
+          )));
+      if (
+        childHeads.length !== 1
+        || childHeads[0]?.representation !== "ordinary"
+      ) return "unavailable" as const;
+      const childUnsafePublication = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: reflectionRecordPublications.recordId,
+        })
+          .from(reflectionRecordPublications)
+          .where(and(
+            eq(reflectionRecordPublications.recordId, input.childRecordRef),
+            ne(reflectionRecordPublications.state, "complete"),
+          ))
+          .limit(1));
+      const childUnsafeReconciliation = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: reflectionRecordAuthorityReconciliations.recordId,
+        })
+          .from(reflectionRecordAuthorityReconciliations)
+          .where(and(
+            eq(
+              reflectionRecordAuthorityReconciliations.recordId,
+              input.childRecordRef,
+            ),
+            ne(reflectionRecordAuthorityReconciliations.state, "complete"),
+          ))
+          .limit(1));
+      if (
+        childUnsafePublication.length > 0
+        || childUnsafeReconciliation.length > 0
+      ) return "unavailable" as const;
+
+      const childSuccessor = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          successor_record_id: reflectionRecordSuccessors.successorRecordId,
+        })
+          .from(reflectionRecordSuccessors)
+          .where(eq(
+            reflectionRecordSuccessors.predecessorRecordId,
+            input.childRecordRef,
+          ))
+          .limit(1));
+      if (childSuccessor.length > 0) return "unavailable" as const;
+
+      const ordinaryHead = recordProductTypedDb.select({
+        record_id: reflectionRecordPayloadRepresentationHeads.recordId,
+      }).from(reflectionRecordPayloadRepresentationHeads).where(and(
+        eq(
+          reflectionRecordPayloadRepresentationHeads.recordId,
+          reflectionRecords.recordId,
+        ),
+        eq(
+          reflectionRecordPayloadRepresentationHeads.representation,
+          "ordinary",
+        ),
+      ));
+      const protectedHead = recordProductTypedDb.select({
+        record_id: reflectionRecordPayloadRepresentationHeads.recordId,
+      }).from(reflectionRecordPayloadRepresentationHeads).where(and(
+        eq(
+          reflectionRecordPayloadRepresentationHeads.recordId,
+          reflectionRecords.recordId,
+        ),
+        eq(
+          reflectionRecordPayloadRepresentationHeads.representation,
+          "protected",
+        ),
+      ));
+      const pendingPublication = recordProductTypedDb.select({
+        record_id: reflectionRecordPublications.recordId,
+      }).from(reflectionRecordPublications).where(and(
+        eq(reflectionRecordPublications.recordId, reflectionRecords.recordId),
+        ne(reflectionRecordPublications.state, "complete"),
+      ));
+      const pendingReconciliation = recordProductTypedDb.select({
+        record_id: reflectionRecordAuthorityReconciliations.recordId,
+      }).from(reflectionRecordAuthorityReconciliations).where(and(
+        eq(
+          reflectionRecordAuthorityReconciliations.recordId,
+          reflectionRecords.recordId,
+        ),
+        ne(reflectionRecordAuthorityReconciliations.state, "complete"),
+      ));
+      const eligibleParent = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: reflectionRecords.recordId,
+        })
+          .from(reflectionRecordDependencies)
+          .innerJoin(
+            reflectionRecords,
+            eq(
+              reflectionRecords.recordId,
+              reflectionRecordDependencies.parentRecordId,
+            ),
+          )
+          .innerJoin(
+            reflectionRecordSemanticWork,
+            eq(
+              reflectionRecordSemanticWork.recordId,
+              reflectionRecords.recordId,
+            ),
+          )
+          .where(and(
+            eq(
+              reflectionRecordDependencies.childRecordId,
+              input.childRecordRef,
+            ),
+            eq(reflectionRecords.recordId, input.parentRecordRef),
+            eq(
+              reflectionRecords.processingGeneration,
+              input.parentProcessingGeneration,
+            ),
+            eq(reflectionRecords.lifecycle, "current"),
+            eq(reflectionRecords.disposition, "available"),
+            gt(reflectionRecords.structuralHeight, 0),
+            eq(reflectionRecords.producerPolicyVersion, "candidate-policy-v1"),
+            eq(reflectionRecordSemanticWork.state, "complete"),
+            eq(
+              reflectionRecordSemanticWork.generation,
+              reflectionRecordSemanticWork.completedGeneration,
+            ),
+            isNull(reflectionRecordSemanticWork.claimGeneration),
+            isNull(reflectionRecordSemanticWork.leaseToken),
+            isNull(reflectionRecordSemanticWork.leaseExpiresAt),
+            isNull(reflectionRecordSemanticWork.acceptedModelBinding),
+            isNull(reflectionRecordSemanticWork.organizerProposalCheckpoint),
+            exists(ordinaryHead),
+            notExists(protectedHead),
+            notExists(pendingPublication),
+            notExists(pendingReconciliation),
+          ))
+          .limit(1)
+          .for("update", { of: reflectionRecordSemanticWork }));
+      if (eligibleParent.length !== 1) return "unavailable" as const;
+
+      const now = this.#clock();
+      const inserted = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.insert(reflectionRecordDependencyChangeRepairs)
+          .values({
+            changeCommitment: syntheticChangeCommitment,
+            changedRecordId: input.childRecordRef,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .onConflictDoNothing({
+            target: reflectionRecordDependencyChangeRepairs.changeCommitment,
+          })
+          .returning({
+            change_commitment:
+              reflectionRecordDependencyChangeRepairs.changeCommitment,
+          }));
+      if (inserted.length !== 1) return "replayed" as const;
+      return "repaired" as const;
+    }, { isolationLevel: "serializable" });
   }
 
   async enqueue(input: Readonly<{

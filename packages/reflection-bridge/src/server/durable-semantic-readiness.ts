@@ -1,4 +1,5 @@
 import type {
+  DurableRecordEnvelope,
   DurableSleepClaim,
   DurableSleepReadinessResult,
 } from "@nautilo/reflection/durable";
@@ -27,6 +28,15 @@ import type {
 import type { RecordSearchCommitmentPort } from "./record-search-composition";
 
 const AUTHORITY_WORK_MAXIMUM = 256;
+
+export interface MissingTerminalStructuralDependencyRepairPort {
+  repairMissingTerminalStructuralDependency(input: Readonly<{
+    parentRecordRef: string;
+    parentProcessingGeneration: number;
+    childRecordRef: string;
+    childProcessingGeneration: number;
+  }>): Promise<"repaired" | "replayed" | "unavailable">;
+}
 
 function sameSortedStrings(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false;
@@ -69,6 +79,7 @@ implements DurableSemanticReadinessPort {
     embedding: RecordEmbeddingPort;
     searchProjections: PostgresRecordSearchProjectionStore;
     commitments: Pick<RecordSearchCommitmentPort, "roomAnchor">;
+    missingTerminalDependencies?: MissingTerminalStructuralDependencyRepairPort;
   }>) {}
 
   async ensureAuthority(
@@ -119,7 +130,10 @@ implements DurableSemanticReadinessPort {
         openedRecords.set(recordRef, opened);
         return opened;
       };
-      const currentStructuralRef = async (recordRef: string): Promise<string | null> => {
+      const currentStructuralRef = async (
+        parent: DurableRecordEnvelope,
+        recordRef: string,
+      ): Promise<string | null> => {
         const visited = new Set<string>();
         let currentRef = recordRef;
         while (visited.size < AUTHORITY_WORK_MAXIMUM) {
@@ -138,8 +152,24 @@ implements DurableSemanticReadinessPort {
           if (
             successors.status !== "available"
             || successors.page.continuation !== undefined
-            || successors.page.items.length !== 1
           ) return null;
+          if (successors.page.items.length === 0) {
+            if (
+              currentRef === recordRef
+              && opened.record.lifecycle === "sunset"
+              && this.ports.missingTerminalDependencies !== undefined
+            ) {
+              await this.ports.missingTerminalDependencies
+                .repairMissingTerminalStructuralDependency({
+                  parentRecordRef: parent.recordRef,
+                  parentProcessingGeneration: parent.processingGeneration,
+                  childRecordRef: opened.record.recordRef,
+                  childProcessingGeneration: opened.record.processingGeneration,
+                });
+            }
+            return null;
+          }
+          if (successors.page.items.length !== 1) return null;
           const edge = successors.page.items[0]!;
           if (
             edge.predecessorRecordRef !== currentRef
@@ -260,7 +290,10 @@ implements DurableSemanticReadinessPort {
             }
             const structuralChildRefs: string[] = [];
             for (const childRecordRef of opened.record.semantic.childRecordRefs) {
-              const currentRef = await currentStructuralRef(childRecordRef);
+              const currentRef = await currentStructuralRef(
+                opened.record,
+                childRecordRef,
+              );
               if (currentRef === null) return { status: "unavailable" as const };
               structuralChildRefs.push(currentRef);
             }

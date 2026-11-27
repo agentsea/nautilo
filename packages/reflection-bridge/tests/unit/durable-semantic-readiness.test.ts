@@ -342,6 +342,150 @@ describe("durable semantic readiness", () => {
     });
   });
 
+  test("repairs only an exact visited structural edge to a proven sunset child", async () => {
+    const child: DurableRecordEnvelope = {
+      ...record,
+      recordRef: "record:terminal-child",
+      lifecycle: "sunset",
+      processingGeneration: 3,
+      semantic: {
+        ...record.semantic,
+        observedContentFingerprint: "sha256:terminal-child",
+      },
+    };
+    const parent: DurableRecordEnvelope = {
+      ...record,
+      recordRef: "record:parent",
+      processingGeneration: 2,
+      structuralHeight: 1,
+      semantic: {
+        ...record.semantic,
+        observedContentFingerprint: "sha256:parent",
+        childRecordRefs: [child.recordRef],
+      },
+    };
+    const repairs: unknown[] = [];
+    const readiness = new DurableRecordSemanticReadiness({
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
+      repository: {
+        async read(input: { recordRef: string }) {
+          return {
+            status: "available" as const,
+            record: input.recordRef === parent.recordRef ? parent : child,
+          };
+        },
+        async readSuccessors() {
+          return { status: "available" as const, page: { items: [] } };
+        },
+      } as never,
+      bindings: {
+        async resolveWork(recordRef: string) {
+          return { readBindingRef: `read:${recordRef}` };
+        },
+      } as never,
+      eligibility: {} as never,
+      embedding: {} as never,
+      searchProjections: {} as never,
+      authorityProjections: {
+        async readCurrent() { return null; },
+        async installInitialClosure() {
+          throw new Error("terminal closure must not install");
+        },
+      } as never,
+      authorityReconciliation: {
+        selection: { selectedRepresentation: "ordinary" },
+      } as never,
+      missingTerminalDependencies: {
+        async repairMissingTerminalStructuralDependency(input: unknown) {
+          repairs.push(input);
+          return "repaired" as const;
+        },
+      },
+    });
+
+    expect(await readiness.ensureAuthority({
+      ...claim,
+      recordRef: parent.recordRef,
+      logicalObjectRef: parent.recordRef,
+    })).toEqual({
+      status: "unavailable",
+      failureCode: "authority_unavailable",
+    });
+    expect(repairs).toEqual([{
+      parentRecordRef: parent.recordRef,
+      parentProcessingGeneration: 2,
+      childRecordRef: child.recordRef,
+      childProcessingGeneration: 3,
+    }]);
+  });
+
+  test("does not repair ambiguous, inaccessible, or non-sunset structural children", async () => {
+    for (const mode of ["inaccessible", "successor_unavailable", "superseded"] as const) {
+      const child: DurableRecordEnvelope = {
+        ...record,
+        recordRef: `record:${mode}:child`,
+        lifecycle: mode === "superseded" ? "superseded" : "sunset",
+        processingGeneration: 3,
+      };
+      const parent: DurableRecordEnvelope = {
+        ...record,
+        recordRef: `record:${mode}:parent`,
+        structuralHeight: 1,
+        semantic: { ...record.semantic, childRecordRefs: [child.recordRef] },
+      };
+      let repairs = 0;
+      const readiness = new DurableRecordSemanticReadiness({
+        commitments: { roomAnchor: () => ROOM_COMMITMENT },
+        repository: {
+          async read(input: { recordRef: string }) {
+            if (mode === "inaccessible" && input.recordRef === child.recordRef) {
+              return { status: "unavailable" as const };
+            }
+            return {
+              status: "available" as const,
+              record: input.recordRef === parent.recordRef ? parent : child,
+            };
+          },
+          async readSuccessors() {
+            return mode === "successor_unavailable"
+              ? { status: "unavailable" as const }
+              : { status: "available" as const, page: { items: [] } };
+          },
+        } as never,
+        bindings: {
+          async resolveWork(recordRef: string) {
+            return { readBindingRef: `read:${recordRef}` };
+          },
+        } as never,
+        eligibility: {} as never,
+        embedding: {} as never,
+        searchProjections: {} as never,
+        authorityProjections: {
+          async readCurrent() { return null; },
+        } as never,
+        authorityReconciliation: {
+          selection: { selectedRepresentation: "ordinary" },
+        } as never,
+        missingTerminalDependencies: {
+          async repairMissingTerminalStructuralDependency() {
+            repairs += 1;
+            return "repaired" as const;
+          },
+        },
+      });
+
+      expect(await readiness.ensureAuthority({
+        ...claim,
+        recordRef: parent.recordRef,
+        logicalObjectRef: parent.recordRef,
+      })).toEqual({
+        status: "unavailable",
+        failureCode: "authority_unavailable",
+      });
+      expect(repairs).toBe(0);
+    }
+  });
+
   test("keeps an exact retired predecessor exposure as authorized provenance without making it structural ancestry", async () => {
     const predecessor: DurableRecordEnvelope = {
       ...record,
