@@ -208,6 +208,18 @@ export const REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE:
       "These fields contain one recovery UUID, one operator UUID, source-generation and configured-model coordinates, and observation, authorization, and consumption timestamps. They contain no Record payload, model input or output, provider response, credential, HMAC key, or commitment secret.",
     includeTable: false,
   }),
+  ...metadataEntries({
+    id: "reflection-checkpoint-resume",
+    table: REFLECTION_TABLE,
+    fields: ["organizer_proposal_resumed_at"],
+    owner: "packages/reflection-bridge",
+    readers: ["packages/db/src/queries/reflection-status.ts"],
+    writers: ["packages/reflection-bridge/src/server/postgres-semantic-work-store.ts"],
+    retention: "Retained on the owning semantic work row as the time of its last saved-proposal recovery.",
+    tests: ["packages/runtime/tests/integration/reflection-semantic-worker-liveness.integration.test.ts"],
+    reason: "This timestamp records when the worker resumed an organizer proposal.",
+    includeTable: false,
+  }),
   ...[GET_RECOVERY_ROUTE, POST_RECOVERY_ROUTE].map(
     (locator, index): EncryptionCoverageEntry => ({
       id: `wire.manual-memory-recovery.${index + 1}`,
@@ -237,6 +249,7 @@ export const REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE:
         "derivedRepair",
         "retired",
         "sourcesQueued",
+        "summariesQueued",
         "error",
       ],
       plaintextReason:
@@ -251,4 +264,5 @@ export const MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS = [
   JOURNAL_TABLE,
   ...JOURNAL_FIELDS.map((field) => `${JOURNAL_TABLE}.${field}`),
   ...REFLECTION_FIELDS.map((field) => `${REFLECTION_TABLE}.${field}`),
+  `${REFLECTION_TABLE}.organizer_proposal_resumed_at`,
 ] as const;

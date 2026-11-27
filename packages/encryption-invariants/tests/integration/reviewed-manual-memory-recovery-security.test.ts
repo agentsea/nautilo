@@ -21,9 +21,9 @@ async function source(path: string): Promise<string> {
 
 describe("manual Memory recovery encryption review", () => {
   test("classifies only the exact new operational metadata surfaces", () => {
-    expect(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).toHaveLength(30);
-    expect(new Set(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).size).toBe(30);
-    expect(REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE).toHaveLength(32);
+    expect(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).toHaveLength(31);
+    expect(new Set(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).size).toBe(31);
+    expect(REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE).toHaveLength(33);
 
     for (const entry of REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE) {
       expect(validateCoverageEntry(entry)).toEqual({ ok: true });
