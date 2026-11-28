@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Recover when a Workspace document changes size while it is opening or syncing.
+  Keep unsaved editor text in place when the connection resumes.
+
 - Update the server's pinned headless Chrome runtime to stable 158.0.8127.88
   on both Linux architectures, preserving complete browser payloads and licenses.
 

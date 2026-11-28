@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { ConflictError } from "@nautilo/api-client";
+import { ConflictError, NautiloApiClient, WorkspaceArtifactLengthMismatchError } from "@nautilo/api-client";
 import {
   artifactOpenFileTarget,
   fsOpenFileTarget,
@@ -7,7 +7,10 @@ import {
 import { MAX_TEXT_PREVIEW_BYTES } from "../../src/lib/file-preview";
 
 const getArtifactMock = mock(async (): Promise<{ id: string; revision: number; size: number } | null> => ({ id: "art-1", revision: 7, size: 5 }));
-const getBytesMock = mock(async () => new TextEncoder().encode("hello").buffer);
+const getBytesMock = mock(async (
+  _id: string,
+  _options: { expectedBytes: number; maxBytes: number; roomId?: string },
+): Promise<ArrayBuffer> => new TextEncoder().encode("hello").buffer);
 const saveArtifactMock = mock(async () => ({
   id: "art-1",
   revision: 8,
@@ -76,9 +79,42 @@ describe("loadEditableText", () => {
     expect(getBytesMock).toHaveBeenCalledWith("art-1", { maxBytes: MAX_TEXT_PREVIEW_BYTES, expectedBytes: 5 });
   });
 
-  test("rejects a same-size revision change between metadata and bytes", async () => {
-    getArtifactMock.mockImplementationOnce(async () => ({ id: "art-1", revision: 7, size: 5 }));
-    getArtifactMock.mockImplementationOnce(async () => ({ id: "art-1", revision: 8, size: 5 }));
+  test("recovers when a Markdown save lands between metadata and the streamed body", async () => {
+    const content = "# Café";
+    const size = new TextEncoder().encode(content).byteLength;
+    const latest = { id: "art-1", revision: 8, size };
+    getArtifactMock.mockResolvedValueOnce({ ...latest, revision: 7, size: 5 })
+      .mockResolvedValueOnce(latest).mockResolvedValueOnce(latest);
+    // Fetch exposes the decoded body of a compressed response.
+    const client = new NautiloApiClient("", {
+      fetchImpl: mock(async () => new Response(content, { headers: { "content-encoding": "gzip" } })) as unknown as typeof fetch,
+    });
+    const read = client.getWorkspaceArtifactBytesArrayBuffer.bind(client);
+    await expect(read("art-1", { expectedBytes: 5 })).rejects.toThrow("Artifact response exceeded its authorized size.");
+    getBytesMock.mockClear();
+    getBytesMock.mockImplementationOnce(read).mockImplementationOnce(read);
+    const file = artifactOpenFileTarget({ id: "art-1", path: "notes.md", mimeType: "text/markdown", roomId: "room-1" });
+    expect(await loadEditableText(file)).toEqual({
+      kind: "ready", content, baseSha256: await sha256HexForText(content), baseRevision: 8,
+    });
+    expect(getBytesMock.mock.calls).toEqual([5, size].map(expectedBytes => [
+      "art-1", { roomId: "room-1", maxBytes: MAX_TEXT_PREVIEW_BYTES, expectedBytes },
+    ]));
+  });
+
+  test("rejects a length mismatch if the revision did not change", async () => {
+    const message = "Artifact response exceeded its authorized size.";
+    getBytesMock.mockClear();
+    getBytesMock.mockRejectedValueOnce(new WorkspaceArtifactLengthMismatchError("truncated", message));
+    const result = await loadEditableText(artifactOpenFileTarget({ id: "art-1", path: "notes.md", mimeType: "text/markdown" }));
+    expect(result).toEqual({ kind: "error", message });
+    expect(getBytesMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("rejects continued same-size revision churn during recovery", async () => {
+    for (const revision of [7, 8, 9]) {
+      getArtifactMock.mockResolvedValueOnce({ id: "art-1", revision, size: 5 });
+    }
     expect(await loadEditableText(artifactOpenFileTarget({ id: "art-1", path: "notes.txt", mimeType: "text/plain" })))
       .toEqual({ kind: "error", message: "The document changed while loading. Try again." });
   });

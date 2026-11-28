@@ -328,6 +328,7 @@ export function usePatchDocumentSession({
         setErrorMessage(latest.kind === "error" ? latest.message : "Could not reload document.");
         return;
       }
+      setErrorMessage(null);
       localIdentityRef.current = latest.localIdentity;
       await tryRebaseDraftOntoLatest(latest, generation);
     },
