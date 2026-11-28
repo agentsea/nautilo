@@ -1,8 +1,9 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { MemoryProviderOutcomeUnknownError, type CapabilityFundingSession } from "@nautilo/agent";
-import type { DirectDatabase } from "@nautilo/db";
+import { roomJournalModelRecoveries, type DirectDatabase } from "@nautilo/db";
 import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
-import { compactionModelExposureDependencies, createRoomSideModelInvoker, type CompactionClaim } from "@nautilo/runtime";
+import { compactionModelExposureDependencies, createRoomSideModelInvoker, extractionModelExposureDependencies,
+  type CompactionClaim, type ExtractionClaim } from "@nautilo/runtime";
 import type { MemoryOperationBinding } from "@nautilo/types";
 
 import * as capabilityFunding from "../../src/lib/capability-funding";
@@ -28,6 +29,7 @@ function database(replayRows: readonly Record<string, unknown>[]) {
     const rows = results.shift() ?? [];
     const query = {
       from() { return this; },
+      innerJoin() { return this; },
       where() { return this; },
       for() { return this; },
       limit: () => Promise.resolve(rows),
@@ -102,6 +104,93 @@ function ordinaryCompactionDatabase() {
     db: { select, update, transaction } as unknown as DirectDatabase,
     accepted: () => accepted,
     acceptedPlan: () => acceptedPlan,
+    updates,
+  };
+}
+
+function ordinaryExtractionDatabase(
+  disabledAt: Date | null = null,
+  replayRows: readonly Record<string, unknown>[] = [],
+  manualRecovery?: Readonly<{ id: string; targetModelId: string }>,
+  manualRecoveryLock?: Promise<void>,
+) {
+  let accepted: MemoryOperationBinding | null = null;
+  let authorityReads = 0;
+  const updates: Record<string, unknown>[] = [];
+  const select = (fields: Record<string, unknown>) => {
+    const keys = Object.keys(fields);
+    const rows = keys.includes("mode")
+      ? [{ mode: "plaintext_only", shadowBehavior: "best_effort", revision: 1 }]
+      : keys.includes("rebuildGeneration") && keys.includes("leaseToken")
+        ? [{
+            rebuildGeneration: 0,
+            leaseToken: LEASE,
+            leaseExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
+            accepted,
+            acceptedPlan: null,
+          }]
+      : keys.includes("acceptedPlan")
+      ? [{ roomId: ROOM, accepted, acceptedPlan: null }]
+      : keys.includes("authorizedInputDigest") && manualRecovery
+        ? [{
+            id: manualRecovery.id,
+            rebuildGeneration: 0,
+            authorizedInputDigest: null,
+            freshServiceInputs: false,
+          }]
+      : keys.includes("targetModelId") && manualRecovery
+        ? [{ targetModelId: manualRecovery.targetModelId }]
+      : keys.length === 1 && keys[0] === "id" && manualRecovery
+        ? [{ id: manualRecovery.id }]
+      : keys.includes("attemptOutcome")
+        ? [...replayRows]
+      : keys.includes("disabledAt")
+        ? (authorityReads += 1, [{ id: 41, disabledAt }])
+      : keys.includes("accepted")
+          ? [{ accepted, ...(keys.includes("status") ? { status: "running" } : {}) }]
+          : [{ roomId: ROOM }];
+    const result = keys.includes("authorizedInputDigest") && manualRecoveryLock
+      ? manualRecoveryLock.then(() => rows)
+      : Promise.resolve(rows);
+    const query = {
+      from() { return this; },
+      innerJoin() { return this; },
+      where() { return this; },
+      for() { return this; },
+      then<TResult1 = Record<string, unknown>[], TResult2 = never>(
+        onfulfilled?: ((value: Record<string, unknown>[]) => TResult1 | PromiseLike<TResult1>) | null,
+        onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+      ) {
+        return result.then(onfulfilled, onrejected);
+      },
+      limit: () => Object.assign(result, {
+        for: () => result,
+      }),
+    };
+    return query;
+  };
+  const update = (table: unknown) => ({
+    set: (values: Record<string, unknown>) => ({
+      where: () => {
+        updates.push(values);
+        if ("acceptedModelBinding" in values) {
+          accepted = values["acceptedModelBinding"] as MemoryOperationBinding;
+        }
+        return table === roomJournalModelRecoveries
+          ? { returning: async () => manualRecovery ? [{ id: manualRecovery.id }] : [] }
+          : Promise.resolve([]);
+      },
+    }),
+  });
+  const transaction = async <T>(run: (tx: {
+    select: typeof select;
+    update: typeof update;
+    execute: () => Promise<unknown>;
+  }) => Promise<T>) => run({ select, update, execute: () => Promise.resolve([]) });
+  return {
+    db: { select, update, transaction } as unknown as DirectDatabase,
+    accepted: () => accepted,
+    authorityReads: () => authorityReads,
     updates,
   };
 }
@@ -193,6 +282,54 @@ function ordinaryCompactionClaim(): CompactionClaim {
   };
 }
 
+function ordinaryExtractionClaim(rebuildGeneration: number | null): ExtractionClaim {
+  const createdAt = new Date("2026-11-26T12:00:00.000Z");
+  const row = {
+    id: 41,
+    createdAt,
+    role: "user" as const,
+    text: "Remember the exact current observation.",
+    displayLabel: "Human",
+    editRevision: 3,
+  };
+  return {
+    batchId: BATCH,
+    roomId: ROOM,
+    ownerId: HUMAN,
+    leaseToken: LEASE,
+    attemptCount: 1,
+    lane: "live",
+    namespaceId: NAMESPACE,
+    rebuildGeneration,
+    plan: {
+      fromMessageIdExclusive: 40,
+      throughMessageIdInclusive: 41,
+      trigger: "count",
+      sourceRows: [{ ...row, conversationalBoundary: true }],
+      coveredMessageIds: [41],
+      conversationalMessageCount: 1,
+      newestEligibleSourceAt: createdAt,
+    },
+    sourceRows: [row],
+    priorContextRows: [],
+    latestRollup: null,
+    visibleEvents: [{
+      id: "record:event-current",
+      roomId: ROOM,
+      sequence: 1,
+      kind: "fact",
+      statement: "Current journal fact.",
+      status: "active",
+      modelExposureDependency: {
+        kind: "record",
+        recordRef: "record:event-current",
+        observedProcessingGeneration: 1,
+        terminalAuthorityLeafHandles: [NAMESPACE],
+      },
+    }],
+  };
+}
+
 const protectedEvidence = {
   readRecord: () => Promise.resolve(null),
   readSource: () => Promise.resolve(null),
@@ -200,6 +337,333 @@ const protectedEvidence = {
 };
 
 describe("ordinary Stenographer Memory funding", () => {
+  test("uses exact retired Journal ancestry for ordinary live and rebuild extraction", async () => {
+    const oldDependency: Extract<DurableModelExposureDependency, { kind: "record" }> = {
+      kind: "record",
+      recordRef: "record:event-old",
+      observedProcessingGeneration: 1,
+      terminalAuthorityLeafHandles: [NAMESPACE],
+    };
+    const currentRecord = {
+      ...journalRecord("record:event-current"),
+      semantic: {
+        ...journalRecord("record:event-current").semantic,
+        modelExposureDependencies: [oldDependency],
+      },
+    };
+    const retiredRecord: DurableRecordEnvelope = {
+      ...journalRecord(oldDependency.recordRef),
+      lifecycle: "superseded",
+      processingGeneration: 2,
+    };
+    const createRuntime = (state: ReturnType<typeof ordinaryExtractionDatabase>, rooms: string[],
+      invocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]>, retiredAvailable = true) => createStenographerMemoryFunding({
+        db: state.db,
+        ports: {
+          readRecord: async (dependency) => dependency.recordRef === currentRecord.recordRef ? currentRecord : null,
+          readSource: async () => ({status: "current", kind: "human", authorHumanId: HUMAN,
+            audienceHumanIds: [HUMAN], includesPublicBoundary: false}),
+          readAudience: async () => ({humanIds: [HUMAN], includesPublicBoundary: false}),
+        },
+        budget: {maxVisitedRecords: 8, maxTraversalWork: 16},
+        commitmentKey: new Uint8Array(32).fill(13),
+        resolveServiceModel: () => "openai:service",
+        assertAvailable: () => Promise.resolve(),
+        readRetiredJournalPredecessor: async (dependency, roomId) => {
+          rooms.push(roomId);
+          return retiredAvailable && dependency.recordRef === retiredRecord.recordRef
+            ? retiredRecord
+            : null;
+        },
+        createInvoker: (options) => {
+          invocations.push(options);
+          return async () => { throw new Error("provider must not run during admission"); };
+        },
+      });
+
+    const rebuildState = ordinaryExtractionDatabase();
+    const rebuildRooms: string[] = [];
+    const rebuildInvocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
+    const rebuildClaim = ordinaryExtractionClaim(7);
+    const rebuildDependencies = extractionModelExposureDependencies(rebuildClaim);
+    const admitted = await createRuntime(rebuildState, rebuildRooms, rebuildInvocations)
+      .admitExtractionModel(rebuildClaim, rebuildDependencies);
+    expect(admitted.modelId).toBe("openai:service");
+    expect(rebuildState.accepted()).toMatchObject({
+      version: 1,
+      kind: "service",
+      role: "memorySummarization",
+      modelId: "openai:service",
+    });
+    expect(rebuildState.updates).toHaveLength(1);
+    expect(rebuildInvocations).toHaveLength(1);
+    expect(rebuildInvocations[0]).not.toHaveProperty("fundingSession");
+    expect(rebuildRooms).toEqual([ROOM, ROOM]);
+    await admitted.assertCurrent();
+    expect(rebuildRooms).toEqual([ROOM, ROOM, ROOM]);
+
+    const liveState = ordinaryExtractionDatabase();
+    const liveRooms: string[] = [];
+    const liveInvocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
+    const liveClaim = ordinaryExtractionClaim(null);
+    const liveAdmitted = await createRuntime(liveState, liveRooms, liveInvocations)
+      .admitExtractionModel(liveClaim, extractionModelExposureDependencies(liveClaim));
+    expect(liveAdmitted.modelId).toBe("openai:service");
+    expect(liveState.accepted()).toMatchObject({
+      version: 1,
+      kind: "service",
+      role: "memorySummarization",
+      modelId: "openai:service",
+    });
+    expect(liveState.updates).toHaveLength(1);
+    expect(liveInvocations).toHaveLength(1);
+    expect(liveInvocations[0]).not.toHaveProperty("fundingSession");
+    expect(liveRooms).toEqual([ROOM, ROOM]);
+    await liveAdmitted.assertCurrent();
+    expect(liveRooms).toEqual([ROOM, ROOM, ROOM]);
+
+    const revokedState = ordinaryExtractionDatabase();
+    const revokedRooms: string[] = [];
+    const revokedInvocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
+    const revoked = await createRuntime(
+      revokedState,
+      revokedRooms,
+      revokedInvocations,
+      false,
+    ).admitExtractionModel(liveClaim, extractionModelExposureDependencies(liveClaim))
+      .catch((error: unknown) => error);
+    expect(revoked).toMatchObject({
+      message: "Memory input evidence or current authority changed",
+    });
+    expect(revokedRooms).toEqual([ROOM]);
+    expect(revokedState.accepted()).toBeNull();
+    expect(revokedState.updates).toHaveLength(0);
+    expect(revokedInvocations).toHaveLength(0);
+
+    const disabledState = ordinaryExtractionDatabase(
+      new Date("2026-11-26T12:01:00.000Z"),
+    );
+    const disabledRooms: string[] = [];
+    const disabledInvocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
+    const disabled = await createRuntime(
+      disabledState,
+      disabledRooms,
+      disabledInvocations,
+    ).admitExtractionModel(liveClaim, extractionModelExposureDependencies(liveClaim))
+      .catch((error: unknown) => error);
+    expect(disabled).toMatchObject({
+      message: "Stenographer input authority is unavailable",
+    });
+    expect(disabledRooms).toEqual([]);
+    expect(disabledState.authorityReads()).toBe(1);
+    expect(disabledState.accepted()).toBeNull();
+    expect(disabledState.updates).toHaveLength(0);
+    expect(disabledInvocations).toHaveLength(0);
+
+    const uncertainState = ordinaryExtractionDatabase(
+      new Date("2026-11-26T12:01:00.000Z"),
+      [{
+        id: "attempt-unknown",
+        attemptOutcome: "succeeded",
+        failureCode: null,
+        metadata: { operationId: BATCH },
+      }],
+    );
+    const uncertain = await createRuntime(uncertainState, [], [])
+      .admitExtractionModel(liveClaim, extractionModelExposureDependencies(liveClaim))
+      .catch((error: unknown) => error);
+    expect(uncertain).toBeInstanceOf(MemoryProviderOutcomeUnknownError);
+    expect(uncertainState.authorityReads()).toBe(0);
+    expect(uncertainState.accepted()).toBeNull();
+    expect(uncertainState.updates).toHaveLength(0);
+  });
+
+  test.each([
+    "openai:gpt-6-luna",
+    "venice:openai-gpt-56-luna",
+    "openrouter:minimax/minimax-m3",
+  ])("admits an exact known-nonusable extraction retry for %s", async (modelId) => {
+    const state = ordinaryExtractionDatabase(null, [{
+      id: "settled-provider-result",
+      attemptOutcome: "succeeded",
+      failureCode: null,
+      metadata: { operationId: BATCH },
+    }]);
+    const claim: ExtractionClaim = {
+      ...ordinaryExtractionClaim(null),
+      previousModelResultKnownNonusable: true,
+      visibleEvents: [],
+    };
+    const invocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
+    const runtime = createStenographerMemoryFunding({
+      db: state.db,
+      ports: {
+        readRecord: async () => null,
+        readSource: async () => ({
+          status: "current",
+          kind: "human",
+          authorHumanId: HUMAN,
+          audienceHumanIds: [HUMAN],
+          includesPublicBoundary: true,
+        }),
+        readAudience: async () => null,
+      },
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+      commitmentKey: new Uint8Array(32).fill(17),
+      resolveServiceModel: () => modelId,
+      assertAvailable: () => Promise.resolve(),
+      createInvoker: (options) => {
+        invocations.push(options);
+        return async () => "unused";
+      },
+    });
+
+    const admitted = await runtime.admitExtractionModel(
+      claim,
+      extractionModelExposureDependencies(claim),
+    );
+
+    expect(admitted.modelId).toBe(modelId);
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatchObject({ modelId, operationId: BATCH });
+    expect(state.authorityReads()).toBe(1);
+  });
+
+  test("keeps an uncertain wire outcome quarantined despite a known-nonusable claim", async () => {
+    const state = ordinaryExtractionDatabase(null, [{
+      id: "unsettled-provider-result",
+      attemptOutcome: "unknown",
+      failureCode: null,
+      metadata: { operationId: BATCH },
+    }]);
+    const claim: ExtractionClaim = {
+      ...ordinaryExtractionClaim(null),
+      previousModelResultKnownNonusable: true,
+    };
+
+    const result = await createStenographerMemoryFunding({
+      db: state.db,
+      ports: protectedEvidence,
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+      commitmentKey: new Uint8Array(32).fill(19),
+      resolveServiceModel: () => "openai:gpt-6-luna",
+      assertAvailable: () => Promise.resolve(),
+    }).admitExtractionModel(claim, extractionModelExposureDependencies(claim))
+      .catch((error: unknown) => error);
+
+    expect(result).toBeInstanceOf(MemoryProviderOutcomeUnknownError);
+    expect(state.authorityReads()).toBe(0);
+    expect(state.accepted()).toBeNull();
+  });
+
+  test("spends one manual recovery only from the final provider-dispatch guard", async () => {
+    const recovery = {
+      id: "60000000-0000-4000-8000-000000000001",
+      targetModelId: "openai:gpt-6-luna",
+    };
+    const state = ordinaryExtractionDatabase(null, [], recovery);
+    const claim: ExtractionClaim = {
+      ...ordinaryExtractionClaim(null),
+      manualModelRecoveryId: recovery.id,
+      manualRecoveryModelId: recovery.targetModelId,
+    };
+    let providerCalls = 0;
+    let guard: ((signal?: AbortSignal) => Promise<void>) | undefined;
+    const runtime = createStenographerMemoryFunding({
+      db: state.db,
+      ports: {
+        readRecord: async (dependency) => journalRecord(dependency.recordRef),
+        readSource: async () => ({
+          status: "current",
+          kind: "human",
+          authorHumanId: HUMAN,
+          audienceHumanIds: [HUMAN],
+          includesPublicBoundary: true,
+        }),
+        readAudience: async () => ({ humanIds: [HUMAN], includesPublicBoundary: true }),
+      },
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+      commitmentKey: new Uint8Array(32).fill(23),
+      resolveServiceModel: () => "openai:other-model",
+      assertAvailable: () => Promise.resolve(),
+      classifyCurrentInputs: async () => ({ kind: "human", humanUserId: HUMAN }),
+      createInvoker: (options) => {
+        guard = options.beforeProviderDispatch;
+        return async () => {
+          await options.beforeProviderDispatch?.();
+          providerCalls += 1;
+          throw new MemoryProviderOutcomeUnknownError();
+        };
+      },
+    });
+
+    const admitted = await runtime.admitExtractionModel(
+      claim,
+      extractionModelExposureDependencies(claim),
+    );
+    expect(admitted.modelId).toBe(recovery.targetModelId);
+    expect(guard).toBeFunction();
+    expect(state.updates.some((update) => "spentAt" in update)).toBe(false);
+    expect(providerCalls).toBe(0);
+
+    const ambiguous = await admitted.invoke("prompt").catch((error: unknown) => error);
+    expect(ambiguous).toBeInstanceOf(MemoryProviderOutcomeUnknownError);
+    expect(state.updates.filter((update) => "spentAt" in update)).toHaveLength(1);
+    expect(providerCalls).toBe(1);
+    await guard!();
+    expect(state.updates.filter((update) => "spentAt" in update)).toHaveLength(1);
+  });
+
+  test("cancellation while the recovery row is locked rolls back before spend", async () => {
+    const recovery = {
+      id: "60000000-0000-4000-8000-000000000002",
+      targetModelId: "openai:gpt-6-luna",
+    };
+    const lock = Promise.withResolvers<void>();
+    const state = ordinaryExtractionDatabase(null, [], recovery, lock.promise);
+    const claim: ExtractionClaim = {
+      ...ordinaryExtractionClaim(null),
+      manualModelRecoveryId: recovery.id,
+      manualRecoveryModelId: recovery.targetModelId,
+    };
+    let guard: ((signal?: AbortSignal) => Promise<void>) | undefined;
+    const admitted = await createStenographerMemoryFunding({
+      db: state.db,
+      ports: {
+        readRecord: async (dependency) => journalRecord(dependency.recordRef),
+        readSource: async () => ({
+          status: "current",
+          kind: "human",
+          authorHumanId: HUMAN,
+          audienceHumanIds: [HUMAN],
+          includesPublicBoundary: true,
+        }),
+        readAudience: async () => ({ humanIds: [HUMAN], includesPublicBoundary: true }),
+      },
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+      commitmentKey: new Uint8Array(32).fill(31),
+      resolveServiceModel: () => "openai:other-model",
+      assertAvailable: () => Promise.resolve(),
+      classifyCurrentInputs: async () => ({ kind: "human", humanUserId: HUMAN }),
+      createInvoker: (options) => {
+        guard = options.beforeProviderDispatch;
+        return async () => "unreachable";
+      },
+    }).admitExtractionModel(claim, extractionModelExposureDependencies(claim));
+
+    const cancellation = new AbortController();
+    const spending = guard!(cancellation.signal).catch((error: unknown) => error);
+    await Promise.resolve();
+    cancellation.abort(new Error("cancelled while waiting for recovery lock"));
+    lock.resolve();
+
+    expect(await spending).toMatchObject({
+      message: "cancelled while waiting for recovery lock",
+    });
+    expect(state.updates.some((update) => "spentAt" in update)).toBe(false);
+    expect(admitted.modelId).toBe(recovery.targetModelId);
+  });
+
   test("freezes a personal compaction binding from exact current Human Record ancestry", async () => {
     const state = ordinaryCompactionDatabase();
     const claim = ordinaryCompactionClaim();

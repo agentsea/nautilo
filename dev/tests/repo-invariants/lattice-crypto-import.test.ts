@@ -2072,6 +2072,9 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/runtime/src/conversation/protected-conversation-transcript.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/protected-execution/foreground-authorization-session.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/memory/foreground-protected-agent-memory-session.ts -> @nautilo/lattice-bridge",
+  // Manual review admission and dispatch apply the canonical ordinary-content
+  // decision to the policy read under their transaction's consumption fence.
+  "packages/runtime/src/memory-review/repository.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/memory/protected-agent-scope-close-worker.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/protected-execution/lease-registry.ts -> @nautilo/lattice-bridge",
   // Task creation consumes bridge-owned payload and authority contracts only;

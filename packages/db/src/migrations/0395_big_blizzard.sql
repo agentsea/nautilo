@@ -1,0 +1,2 @@
+ALTER TABLE "memory_recovery_runs" ADD COLUMN "progress" jsonb;--> statement-breakpoint
+CREATE INDEX "memory_recovery_runs_pending" ON "memory_recovery_runs" USING btree ("observed_through","id") WHERE "memory_recovery_runs"."stenographer" IS NULL OR "memory_recovery_runs"."reflection" IS NULL OR "memory_recovery_runs"."memory" IS NULL;

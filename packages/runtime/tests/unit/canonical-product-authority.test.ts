@@ -92,6 +92,18 @@ describe("canonical Reflection product authority adapters", () => {
       invocationAudienceCommitment:
         'audience:{"humanRefs":["human-a","human-b"],"includesPublicBoundary":true}',
     });
+    expect(await ports.evidence.resolveNamespace(NAMESPACE)).toEqual({
+      roomId: ROOM,
+      namespaceId: NAMESPACE,
+      bindingRef: BINDING,
+      audience: {
+        humanRefs: ["human-a", "human-b"],
+        includesPublicBoundary: true,
+      },
+    });
+    expect(await ports.evidence.resolveNamespace(
+      "66000000-0000-4000-8000-000000000099",
+    )).toBeNull();
   });
 
   test("resolves the exact origin when sibling Rooms share one Namespace", async () => {

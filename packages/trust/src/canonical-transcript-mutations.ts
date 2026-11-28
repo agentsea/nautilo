@@ -1,7 +1,6 @@
 import {
   acquireEncryptionPublicationFence,
   acquireOrdinaryEncryptionPublicationFence,
-  ROOM_JOURNAL_EXTRACTOR_VERSION,
   acquireRoomWriteLock,
   alias,
   and,
@@ -12,7 +11,7 @@ import {
   inArray,
   max,
   pushMessageCandidates,
-  roomJournalState,
+  requestRoomJournalRebuildInTx,
   rooms,
   sessionMessageCryptoRevisions,
   sessionMessages,
@@ -889,31 +888,7 @@ export async function editCanonicalTranscriptMessageInTx<T = void>(
     );
   }
 
-  await tx
-    .insert(roomJournalState)
-    .values({
-      roomId: target.roomId,
-      lastProcessedMessageId: 0,
-      extractorVersion: ROOM_JOURNAL_EXTRACTOR_VERSION,
-      rebuildGeneration: 1,
-      rebuildRequestedAt: editedAt,
-      rebuildTargetMessageId: null,
-      createdAt: editedAt,
-      updatedAt: editedAt,
-    })
-    .onConflictDoUpdate({
-      target: roomJournalState.roomId,
-      set: {
-        rebuildGeneration: sql`${roomJournalState.rebuildGeneration} + 1`,
-        rebuildRequestedAt: editedAt,
-        rebuildTargetMessageId: null,
-        leaseToken: null,
-        leaseExpiresAt: null,
-        compactionLeaseToken: null,
-        compactionLeaseExpiresAt: null,
-        updatedAt: editedAt,
-      },
-    });
+  await requestRoomJournalRebuildInTx(tx, target.roomId, editedAt);
 
   const hookResult = await hooks.afterRowsEdited?.({
     tx,

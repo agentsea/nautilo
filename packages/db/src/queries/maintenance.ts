@@ -350,7 +350,7 @@ export async function clearMaintenanceWith(
  * safe) when the lease is still live or already normal.
  */
 export async function recoverExpiredMaintenanceWith(
-  handle: DirectDatabase,
+  handle: Pick<DirectDatabase, "transaction">,
   now: Date = new Date(),
 ): Promise<{ recovered: boolean; snapshot: MaintenanceSnapshot }> {
   return handle.transaction(async (tx) => {

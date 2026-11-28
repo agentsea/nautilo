@@ -19,6 +19,7 @@ interface SummaryRow {
   checkpointed: number | string;
   deferred: number | string;
   complete: number | string;
+  unresolved_provider_outcomes: number | string;
   quarantined: number | string;
   recovery_eligible: number | string;
   maximum_recovery_round: number | string;
@@ -87,6 +88,7 @@ export async function queryReflectionAdminStatus(
     since: Date;
     until: Date;
     scheduler: ReflectionSemanticSchedulerStatus;
+    includeRecovery?: boolean;
   }>,
   db: DirectDatabase = getSharedDirectDb(),
 ): Promise<ReflectionAdminStatus> {
@@ -141,6 +143,9 @@ export async function queryReflectionAdminStatus(
       count(*) FILTER (WHERE state = 'checkpointed')::integer AS checkpointed,
       count(*) FILTER (WHERE state = 'deferred')::integer AS deferred,
       count(*) FILTER (WHERE state = 'complete')::integer AS complete,
+      count(*) FILTER (
+        WHERE completion_outcome = 'provider_outcome_unknown'
+      )::integer AS unresolved_provider_outcomes,
       count(*) FILTER (WHERE state = 'quarantined')::integer AS quarantined,
       count(*) FILTER (
         WHERE state = 'quarantined' AND recover_after <= ${now}
@@ -182,12 +187,15 @@ export async function queryReflectionAdminStatus(
       projection.incompatible_projections,
       count(*) FILTER (
         WHERE completed_at >= ${since} AND completed_at <= ${until}
+          AND completion_outcome <> 'provider_outcome_unknown'
       )::integer AS completed_work,
       (SELECT count(*)::integer FROM reflection_records
         WHERE structural_height > 0
           AND created_at >= ${since} AND created_at <= ${until}
       ) AS synthetic_parents_created,
-      max(completed_at) AS last_completed_at,
+      max(completed_at) FILTER (
+        WHERE completion_outcome <> 'provider_outcome_unknown'
+      ) AS last_completed_at,
       min(recover_after) FILTER (WHERE state = 'quarantined') AS next_recovery_at
     FROM projection LEFT JOIN work ON true
     GROUP BY projection.available_records, projection.current_projections,
@@ -195,7 +203,7 @@ export async function queryReflectionAdminStatus(
   `));
   const summary: SummaryRow = summaryRows[0] ?? {
     total_records: 0, backlog: 0, due: 0, claimed: 0, checkpointed: 0,
-    deferred: 0, complete: 0, quarantined: 0, recovery_eligible: 0,
+    deferred: 0, complete: 0, unresolved_provider_outcomes: 0, quarantined: 0, recovery_eligible: 0,
     maximum_recovery_round: 0, stale_leases: 0,
     maximum_attempts: 0, current_parent_violations: 0,
     oldest_overdue_at: null, authority_projection: 0,
@@ -248,12 +256,14 @@ export async function queryReflectionAdminStatus(
         backlog: { size: current.backlog, oldestAgeMs: current.oldestOverdueMs },
       }
     : input.scheduler;
-  const durableHealth = classifyReflectionHealth(current);
+  const durableHealth = count(summary.unresolved_provider_outcomes) > 0
+    ? "degraded" : classifyReflectionHealth(current);
   return {
     generatedAt: input.now.toISOString(),
     window: { since: input.since.toISOString(), until: input.until.toISOString() },
     health: scheduler.state === "pressure_paused" ? "degraded" : durableHealth,
     scheduler,
+    ...(input.includeRecovery === true ? { unresolvedProviderOutcomes: count(summary.unresolved_provider_outcomes) } : {}),
     current,
     stages: {
       authorityProjection: count(summary.authority_projection),

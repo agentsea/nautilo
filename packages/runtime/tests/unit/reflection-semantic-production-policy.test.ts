@@ -4,6 +4,8 @@ import type { DirectDatabase } from "@nautilo/db";
 
 import {
   DURABLE_SLEEP_MAX_WORK_ITEMS_PER_RUN,
+  DurableSleepModelLaneUnavailableError,
+  DurableSleepOrganizationUnavailableError,
   ORGANIZER_BATCH_MAX_ITEMS,
   type DurableSleepClaim,
   type DurableSleepSemanticPort,
@@ -11,6 +13,7 @@ import {
 
 import {
   REFLECTION_SEMANTIC_RUNTIME_POLICY_V1,
+  ReflectionModelInvocationState,
   createProductionReflectionMemoryRuntime,
   selectRetainedReflectionRepair,
   classifyReflectionModelInvocationFailure,
@@ -34,7 +37,9 @@ function productDb(): DirectDatabase {
     unsafe(statement: string) {
       return Promise.resolve(statement.includes("current_user")
         ? [{ current_role: "nautilo", session_role: "nautilo" }]
-        : []);
+        : statement.includes("pg_try_advisory_xact_lock")
+          ? [{ locked: true }]
+          : []);
     },
     begin(
       _isolation: string,
@@ -84,11 +89,68 @@ describe("production Reflection semantic policy", () => {
     expect(() => selectRetainedReflectionRepair([admission], consumed))
       .toThrow("admission changed");
   });
+  test("retains repairs only for the exact OpenAI, Venice, and Surplus lease", () => {
+    for (const providerRoute of ["openai", "venice", "surplus"] as const) {
+      const state = new ReflectionModelInvocationState<{ providerRoute: typeof providerRoute }>();
+      const consumed = new WeakSet<{ providerRoute: typeof providerRoute }>();
+      const claim: DurableSleepClaim = {
+        logicalObjectRef: `logical:record:${providerRoute}`,
+        generation: 7,
+        recordRef: `record:${providerRoute}`,
+        changeReason: "created",
+        stage: "organization",
+        leaseToken: `lease:${providerRoute}:original`,
+      };
+      const replacement: DurableSleepClaim = {
+        ...claim,
+        leaseToken: `lease:${providerRoute}:replacement`,
+      };
+      const admission = { providerRoute };
+
+      state.retain([claim], admission);
+      expect(state.selectRepair([claim], consumed)).toBe(admission);
+      expect(state.selectRepair([replacement], consumed)).toBeNull();
+
+      state.markReplayChecked([claim], `reflection:${providerRoute}:primary`);
+      expect(state.wasReplayChecked([claim], `reflection:${providerRoute}:primary`)).toBeTrue();
+      expect(state.wasReplayChecked([replacement], `reflection:${providerRoute}:primary`)).toBeFalse();
+    }
+  });
+  test("keeps stale lease authority separate from provider cooldown", () => {
+    const staleLease = new DurableSleepOrganizationUnavailableError();
+    expect(classifyReflectionModelInvocationFailure(
+      staleLease,
+      "openai:gpt-5.6-sol",
+      "openai:gpt-5.6-sol",
+    )).toBe(staleLease);
+  });
   test("quarantines uncertain Memory provider outcomes instead of entering lane retry", () => {
     expect(classifyReflectionModelInvocationFailure(
       new MemoryProviderOutcomeUnknownError(),
       "test:no-model",
+      "test:no-model",
     )).toBeInstanceOf(DurableSleepProviderOutcomeUnknownError);
+  });
+  test("limits non-default retained model failures to their exact jobs", () => {
+    expect(classifyReflectionModelInvocationFailure(
+      new Error("provider rejected the retained route"),
+      "test:retained-openai",
+      "test:configured-haiku",
+    )).toMatchObject({
+      scope: "exact_binding",
+    });
+    expect(classifyReflectionModelInvocationFailure(
+      new Error("provider rejected the configured route"),
+      "test:configured-haiku",
+      "test:configured-haiku",
+    )).toMatchObject({
+      scope: "configured_default",
+    });
+    expect(classifyReflectionModelInvocationFailure(
+      new Error("provider rejected the retained route"),
+      "test:retained-openai-2",
+      "test:configured-haiku",
+    )).toBeInstanceOf(DurableSleepModelLaneUnavailableError);
   });
   test("binds one supplied data-operation pair into the existing worker", async () => {
     const claim: DurableSleepClaim = {
@@ -215,12 +277,57 @@ describe("production Reflection semantic policy", () => {
     );
     expect(dispatch).toContain("await admitted.assertCurrent()");
     expect(dispatch).toContain("await admitted.assertExposure(dependencies)");
+    expect(dispatch).toContain("await assertAdditionalCurrent?.()");
+    expect(dispatch).toContain("if (assertAdditionalCurrent !== undefined)");
+    expect(dispatch).toContain("assertCurrent: assertInvocationCurrent");
     const recheck = dispatch.indexOf("await assertInvocationCurrent()");
+    const inheritedRecheck = dispatch.indexOf(
+      "if (assertAdditionalCurrent !== undefined)",
+    );
+    const operatorConsume = dispatch.indexOf("consumeManualProviderAttempt");
     const consume = dispatch.indexOf("consumedRepairs.add(admitted)");
     const wire = dispatch.indexOf("createRoomSideModelInvoker");
     expect(recheck).toBeGreaterThan(-1);
-    expect(consume).toBeGreaterThan(recheck);
+    expect(inheritedRecheck).toBeGreaterThan(recheck);
+    expect(operatorConsume).toBeGreaterThan(inheritedRecheck);
+    expect(consume).toBeGreaterThan(inheritedRecheck);
     expect(wire).toBeGreaterThan(consume);
+  });
+
+  test("rechecks exact dependency evidence and preserves invalid model output", () => {
+    const source = readFileSync(
+      new URL("../../src/reflection/production-reflection-memory.ts", import.meta.url),
+      "utf8",
+    );
+    const dependencyLoss = source.slice(
+      source.indexOf("dependencyLoss: {"),
+      source.indexOf("const dataOperations", source.indexOf("dependencyLoss: {")),
+    );
+    expect(dependencyLoss).toContain("rewriteInput.modelExposureDependencies");
+    expect(dependencyLoss).toContain("contextForRecord(");
+    expect(dependencyLoss).toContain("lossInput.claim.recordRef");
+    expect(dependencyLoss).toContain("current.binding.invocationAudience");
+    expect(dependencyLoss).toContain("assertEvidenceCurrent");
+    expect(dependencyLoss).toContain('result.errorCode === "invalid_output"');
+    expect(dependencyLoss).toContain('status: "invalid_model_output"');
+  });
+
+  test("consumes an operator attempt after replay checks and before the provider wire", () => {
+    const source = readFileSync(
+      new URL("../../src/reflection/production-reflection-memory.ts", import.meta.url),
+      "utf8",
+    );
+    const dispatch = source.slice(
+      source.indexOf("const dispatchForRecords"),
+      source.indexOf("const invokeForRecords"),
+    );
+    const replay = dispatch.indexOf("resolveModelAttemptReplaySafety");
+    const consume = dispatch.indexOf("consumeManualProviderAttempt");
+    const wire = dispatch.indexOf("createRoomSideModelInvoker");
+    expect(replay).toBeGreaterThan(-1);
+    expect(consume).toBeGreaterThan(replay);
+    expect(wire).toBeGreaterThan(consume);
+    expect(dispatch).toContain('manualAttempt !== "consumed"');
   });
 
   test("binds body-free structural Record search through the production authority-filtered selector", () => {

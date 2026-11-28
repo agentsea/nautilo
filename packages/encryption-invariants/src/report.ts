@@ -103,6 +103,7 @@ export type CoverageSourceAlarmDebt = {
 
 const CLASSIFICATIONS: readonly EncryptionClassification[] = [
   "protected",
+  "server_encrypted",
   "bounded_metadata",
   "public",
   "operator_secret",

@@ -301,6 +301,25 @@ export function bindReflectionSemanticDataOperationPort(input: Readonly<{
   };
 
   const semantic: DurableSleepSemanticPort = {
+    ...(input.ordinary.organizerCheckpoints === undefined ? {} : {
+      organizerCheckpoints: {
+        read: (claim: DurableSleepClaim, signal?: AbortSignal) =>
+          useClaim(claim, "organization", signal, selection =>
+            selection.snapshot.policy.mode === "plaintext_only" && selection.executionRepresentation === "ordinary"
+              ? input.ordinary.organizerCheckpoints!.read(claim, signal)
+              : Promise.resolve(null)),
+        save: async (items: Parameters<NonNullable<DurableSleepSemanticPort["organizerCheckpoints"]>["save"]>[0], signal?: AbortSignal) => {
+          // A protected or fallback answer requires a Namespace-protected
+          // output. Never save it through the ordinary checkpoint store.
+          const selections = items.map(({ claim }) => selectionFor(claim));
+          if (selections.some(selection => selection.snapshot.policy.mode !== "plaintext_only"
+            || selection.executionRepresentation !== "ordinary")) return;
+          for (const selection of selections) await revalidate(selection, signal);
+          await input.ordinary.organizerCheckpoints!.save(items, signal);
+          for (const selection of selections) await revalidate(selection, signal);
+        },
+      },
+    }),
     async ensureAuthority(claim, signal) {
       return useClaim(claim, "authority_projection", signal, (selection) =>
         selection.executionRepresentation === "protected"

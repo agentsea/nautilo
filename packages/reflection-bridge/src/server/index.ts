@@ -11,6 +11,7 @@ export * from "./protected-reconciler";
 export * from "./postgres-record-product-store";
 export * from "./postgres-current-record-publication-binding";
 export * from "./postgres-semantic-work-store";
+export * from "./postgres-derived-record-lineage-repair";
 export * from "./protected-record-crypto";
 export * from "./authority-contracts";
 export * from "./authority-closure";

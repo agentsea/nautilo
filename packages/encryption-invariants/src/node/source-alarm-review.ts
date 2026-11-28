@@ -21,6 +21,7 @@ import {
   REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS,
   SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-paid-service-funding-source-alarms";
+import { REVIEWED_MEMORY_RECOVERY_SOURCE_ALARMS } from "../../baseline/reviewed-memory-recovery-source-alarms";
 import {
   REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_10_13_SOURCE_ALARM_LOCATORS,
@@ -388,6 +389,7 @@ export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = review
     !SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS.has(review.locator)
   )
   .concat(REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS)
+  .concat(REVIEWED_MEMORY_RECOVERY_SOURCE_ALARMS)
   .filter((review) =>
     !SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS.has(review.locator)
   )

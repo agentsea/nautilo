@@ -13,6 +13,7 @@ export interface ReflectionStatusQueryInput {
   now: Date;
   since: Date;
   until: Date;
+  includeRecovery?: boolean;
 }
 
 export type QueryReflectionStatus = (
@@ -21,6 +22,9 @@ export type QueryReflectionStatus = (
 
 export interface ReflectionStatusRoutesDeps {
   queryStatus: QueryReflectionStatus;
+  queryRecoveryStatus?: (
+    input: ReflectionStatusQueryInput,
+  ) => Promise<Pick<ReflectionAdminStatus, "providerSucceededResultMissing" | "resumedFromSavedProposal" | "quarantinedByReason">>;
   queryAuthorityStatus?: (
     input: ReflectionStatusQueryInput,
   ) => Promise<ReflectionProtectedAuthorityStatus>;
@@ -59,20 +63,24 @@ export function reflectionStatusRoutes(
   });
   const now = deps.now ?? (() => new Date());
 
-  app.get("/api/admin/reflection-status", async (request, reply) => {
+  app.get<{ Querystring: { recovery?: string } }>("/api/admin/reflection-status", async (request, reply) => {
     if (!(await requireServerSettingsRead(request, reply, hasCapability))) return;
+    const includeRecovery = request.query.recovery === "1";
     const until = now();
     const since = new Date(until.getTime() - REFLECTION_STATUS_WINDOW_MS);
     let status: ReflectionAdminStatus;
     try {
       const input = { now: until, since, until };
-      const [ordinaryStatus, protectedAuthority] = await Promise.all([
-        deps.queryStatus(input),
+      const [ordinaryStatus, protectedAuthority, recoveryStatus] = await Promise.all([
+        deps.queryStatus({ ...input, ...(includeRecovery ? { includeRecovery } : {}) }),
         deps.queryAuthorityStatus?.(input),
+        includeRecovery ? recoveryDetails(deps.queryRecoveryStatus, input) : undefined,
       ]);
-      status = protectedAuthority === undefined
-        ? ordinaryStatus
-        : { ...ordinaryStatus, protectedAuthority };
+      status = {
+        ...ordinaryStatus,
+        ...(recoveryStatus ?? {}),
+        ...(protectedAuthority === undefined ? {} : { protectedAuthority }),
+      };
     } catch (error) {
       logError("[reflection-status] query failed", {
         failureCode: "reflection_status_query_failed",
@@ -97,4 +105,21 @@ export function reflectionStatusRoutes(
     }
     return reply.send(parsed.data);
   });
+}
+
+const recoverySchema = reflectionAdminStatusSchema.pick({
+  providerSucceededResultMissing: true, resumedFromSavedProposal: true, quarantinedByReason: true,
+}).strict();
+async function recoveryDetails(
+  query: ReflectionStatusRoutesDeps["queryRecoveryStatus"], input: ReflectionStatusQueryInput,
+) {
+  if (!query) return undefined;
+  try {
+    return recoverySchema.parse(await query(input));
+  } catch {
+    logError("[reflection-status] supplemental recovery details unavailable", {
+      failureCode: "reflection_recovery_diagnostics_unavailable",
+    });
+    return undefined;
+  }
 }

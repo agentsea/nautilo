@@ -1,18 +1,25 @@
-import { and, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNotNull, isNull, lte, ne, notExists, notInArray, or, sql } from "drizzle-orm";
+import { QueryBuilder } from "drizzle-orm/pg-core";
 import { getSharedDirectDb, type DirectDatabase } from "../config/direct-database";
 import { llmUsageEvents } from "../schema/llm-usage";
+import { memoryReviewReceipts } from "../schema/memory-review";
+
+export const KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES = ["invalid_proposal", "iteration_exhausted"] as const;
 
 export type ModelAttemptReplayIdentity =
   | Readonly<{
       kind: "memory_review";
       roomId: string;
       workId: string;
-      attemptIds: readonly string[];
     }>
   | Readonly<{
       kind: "operation";
       roomId: string;
       callType: "room_stenographer" | "room_event_compaction" | "room_reflection" | "image_assistance";
+      operationId: string;
+    }>
+  | Readonly<{
+      kind: "reflection_operation";
       operationId: string;
     }>;
 
@@ -22,6 +29,40 @@ export type ModelAttemptReplaySafety = Readonly<{
 }>;
 
 type ModelAttemptReplayDb = Pick<DirectDatabase, "select">;
+
+/** The operator recovery is limited to exact, already settled service calls. */
+export async function hasSettledServiceMemoryReview(
+  input: Readonly<{ roomId: string; workId: string; modelId: string }>,
+  db: ModelAttemptReplayDb,
+): Promise<boolean> {
+  const rows = await db.select({
+    fundingKind: llmUsageEvents.fundingKind,
+    payerHumanId: llmUsageEvents.payerHumanId,
+    providerRoute: llmUsageEvents.providerRoute,
+    model: llmUsageEvents.model,
+    actualCost: llmUsageEvents.actualCostUsd,
+    requestId: llmUsageEvents.providerRequestId,
+    attemptOutcome: llmUsageEvents.attemptOutcome,
+    costState: llmUsageEvents.costState,
+    recoveryState: llmUsageEvents.recoveryState,
+    attemptId: sql<string | null>`${llmUsageEvents.metadata}->>'attemptId'`,
+  }).from(llmUsageEvents).where(and(
+    eq(llmUsageEvents.roomId, input.roomId),
+    eq(llmUsageEvents.callType, "memory_review"),
+    eq(sql<string>`${llmUsageEvents.metadata}->>'workId'`, input.workId),
+  ));
+  return rows.length > 0 && rows.every((row) =>
+    (row.fundingKind === "service" || row.fundingKind === "server")
+    && row.payerHumanId === null
+    && row.providerRoute === "surplus"
+    && row.model === input.modelId
+    && row.actualCost !== null
+    && row.requestId
+    && row.attemptId
+    && row.attemptOutcome === "succeeded"
+    && row.costState === "actual"
+    && row.recoveryState === null);
+}
 
 type AttemptRow = Pick<
   typeof llmUsageEvents.$inferSelect,
@@ -38,6 +79,52 @@ function isSafePreServiceFailure(row: AttemptRow): boolean {
   return row.attemptOutcome === "failed"
     && typeof row.failureCode === "string"
     && (SAFE_PRE_SERVICE_FAILURE_CODES as readonly string[]).includes(row.failureCode);
+}
+
+function replayCallType(identity: ModelAttemptReplayIdentity) {
+  if (identity.kind === "memory_review") return "memory_review";
+  if (identity.kind === "reflection_operation") return "room_reflection";
+  return identity.callType;
+}
+
+function matchingAttempts(identity: ModelAttemptReplayIdentity) {
+  return and(
+    // A co-bound Reflection family can resume with a different accounting Room.
+    // Its committed operation ID remains the same for every member.
+    identity.kind === "reflection_operation" ? undefined : eq(llmUsageEvents.roomId, identity.roomId),
+    eq(llmUsageEvents.callType, replayCallType(identity)),
+    identity.kind === "memory_review"
+      ? eq(sql<string>`${llmUsageEvents.metadata}->>'workId'`, identity.workId)
+      : eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, identity.operationId),
+  );
+}
+
+/** Changing provider requires positive refusal evidence and a server-funded work history. */
+export async function hasOnlyRefusedServiceAttempts(
+  identities: readonly ModelAttemptReplayIdentity[],
+  db: ModelAttemptReplayDb,
+  current: Readonly<{
+    modelId: string;
+    attemptId?: string;
+    occurredAtOrAfter?: Date;
+    occurredAtOrBefore?: Date;
+  }>,
+): Promise<boolean> {
+  if (identities.length === 0) return false;
+  const currentAttempt = and(
+    eq(llmUsageEvents.model, current.modelId),
+    current.attemptId === undefined ? undefined : eq(sql<string>`${llmUsageEvents.metadata}->>'attemptId'`, current.attemptId),
+    current.occurredAtOrAfter === undefined ? undefined : gte(llmUsageEvents.occurredAt, current.occurredAtOrAfter),
+    current.occurredAtOrBefore === undefined ? undefined : lte(llmUsageEvents.occurredAt, current.occurredAtOrBefore),
+  );
+  const [row] = await db.select({
+    proven: sql<boolean>`coalesce(bool_or(${currentAttempt}), false) and coalesce(bool_and(coalesce(
+      ${llmUsageEvents.attemptOutcome} = 'failed'
+      and ${inArray(llmUsageEvents.failureCode, [...SAFE_PRE_SERVICE_FAILURE_CODES])}
+      and ${llmUsageEvents.fundingKind} in ('service', 'server')
+      and ${llmUsageEvents.payerHumanId} is null, false)), false)`,
+  }).from(llmUsageEvents).where(or(...identities.map(matchingAttempts)));
+  return row?.proven === true;
 }
 
 /**
@@ -58,20 +145,17 @@ export function classifyModelAttemptReplaySafety(
   return { decision: "allow" };
 }
 
-/** Bounded callers pass exact prior attempt ids or one stable operation id. */
+/** Match one stable work identity and inspect at most one blocking wire outcome. */
 export async function resolveModelAttemptReplaySafety(
   identity: ModelAttemptReplayIdentity,
   options: Readonly<{ db?: ModelAttemptReplayDb; knownNonusableResult?: boolean }> = {},
 ): Promise<ModelAttemptReplaySafety> {
-  if (identity.kind === "memory_review" && identity.attemptIds.length === 0) {
-    return { decision: "allow" };
-  }
-  const callType = identity.kind === "memory_review" ? "memory_review" : identity.callType;
+  const callType = replayCallType(identity);
   // Image assistance has no separate durable work row that can prove a
   // succeeded provider result was unusable. Without a retained transcript
   // observation, every non-refusal wire outcome remains non-replayable.
   const knownNonusableResult = options.knownNonusableResult === true
-    && callType !== "image_assistance";
+    && identity.kind === "operation" && callType !== "image_assistance";
   const unsafeFailedAttempt = and(
     eq(llmUsageEvents.attemptOutcome, "failed"),
     or(
@@ -79,17 +163,24 @@ export async function resolveModelAttemptReplaySafety(
       notInArray(llmUsageEvents.failureCode, [...SAFE_PRE_SERVICE_FAILURE_CODES]),
     ),
   );
-  const blockingAttempt = knownNonusableResult
-    ? or(
-        isNull(llmUsageEvents.attemptOutcome),
-        notInArray(llmUsageEvents.attemptOutcome, ["failed", "succeeded"]),
-        unsafeFailedAttempt,
-      )
-    : or(
-        isNull(llmUsageEvents.attemptOutcome),
-        ne(llmUsageEvents.attemptOutcome, "failed"),
-        unsafeFailedAttempt,
-      );
+  const provenRejection = identity.kind === "memory_review"
+    ? new QueryBuilder().select({ id: memoryReviewReceipts.id }).from(memoryReviewReceipts).where(and(
+        eq(memoryReviewReceipts.workId, identity.workId),
+        eq(sql<string>`${memoryReviewReceipts.id}::text`, sql<string>`${llmUsageEvents.metadata}->>'attemptId'`),
+        eq(memoryReviewReceipts.outcome, "failed"),
+        eq(memoryReviewReceipts.phase, "model"),
+        inArray(memoryReviewReceipts.code, [...KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES]),
+      ))
+    : undefined;
+  const blockingAttempt = or(
+    isNull(llmUsageEvents.attemptOutcome),
+    notInArray(llmUsageEvents.attemptOutcome, ["failed", "succeeded"]),
+    unsafeFailedAttempt,
+    knownNonusableResult ? undefined : and(
+      eq(llmUsageEvents.attemptOutcome, "succeeded"),
+      provenRejection === undefined ? undefined : notExists(provenRejection),
+    ),
+  );
   const rows = await (options.db ?? getSharedDirectDb())
     .select({
       id: llmUsageEvents.id,
@@ -99,16 +190,56 @@ export async function resolveModelAttemptReplaySafety(
     })
     .from(llmUsageEvents)
     .where(and(
-      eq(llmUsageEvents.roomId, identity.roomId),
-      eq(llmUsageEvents.callType, callType),
-      ...(identity.kind === "memory_review"
-        ? [
-            eq(sql<string>`${llmUsageEvents.metadata}->>'workId'`, identity.workId),
-            inArray(sql<string>`${llmUsageEvents.metadata}->>'attemptId'`, [...identity.attemptIds]),
-          ]
-        : [eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, identity.operationId)]),
+      matchingAttempts(identity),
       blockingAttempt,
     ))
     .limit(1);
   return classifyModelAttemptReplaySafety(rows, { knownNonusableResult });
+}
+
+/** A changed-input grant may ignore only a positively settled, zero-cost
+ * authorization refusal. Every other receipt is evidence of a possible wire. */
+export async function resolveFreshCompactionAttemptReplaySafety(
+  input: Readonly<{
+    roomId: string;
+    operationId: string;
+    occurredAfter?: Date;
+    occurredAtOrAfter?: Date;
+  }>,
+  db: ModelAttemptReplayDb,
+): Promise<ModelAttemptReplaySafety> {
+  if (input.occurredAfter !== undefined
+    && input.occurredAtOrAfter !== undefined) {
+    throw new TypeError("Fresh compaction replay boundary is ambiguous");
+  }
+  const [blocking] = await db.select({
+    id: llmUsageEvents.id,
+  }).from(llmUsageEvents).where(and(
+    eq(llmUsageEvents.roomId, input.roomId),
+    eq(llmUsageEvents.callType, "room_event_compaction"),
+    eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, input.operationId),
+    input.occurredAfter === undefined
+      ? undefined
+      : gt(llmUsageEvents.occurredAt, input.occurredAfter),
+    input.occurredAtOrAfter === undefined
+      ? undefined
+      : gte(llmUsageEvents.occurredAt, input.occurredAtOrAfter),
+    or(
+      isNull(llmUsageEvents.attemptOutcome),
+      ne(llmUsageEvents.attemptOutcome, "failed"),
+      isNull(llmUsageEvents.failureCode),
+      notInArray(llmUsageEvents.failureCode, [...SAFE_PRE_SERVICE_FAILURE_CODES]),
+      isNull(llmUsageEvents.costState),
+      ne(llmUsageEvents.costState, "actual"),
+      isNull(llmUsageEvents.actualCostUsd),
+      ne(llmUsageEvents.actualCostUsd, "0"),
+      isNull(llmUsageEvents.fundingKind),
+      notInArray(llmUsageEvents.fundingKind, ["service", "server"]),
+      isNotNull(llmUsageEvents.payerHumanId),
+      isNotNull(llmUsageEvents.recoveryState),
+    ),
+  )).limit(1);
+  return blocking === undefined
+    ? { decision: "allow" }
+    : { decision: "block_unknown", blockingAttemptId: blocking.id };
 }

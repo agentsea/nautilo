@@ -5,6 +5,8 @@ import {
   readModelInputExposure,
 } from "@nautilo/agent";
 import {
+  and,
+  eq,
   findReflectionEnabledHumanOwnersWith,
   findReflectionLegacyJournalEventSourceWith,
   findReflectionMemoryNamespaceIdsWith,
@@ -12,13 +14,23 @@ import {
   findReflectionMessageSourceWith,
   findReflectionProfileSoulSourceWith,
   findReflectionRollupSourceWith,
-  type DirectDatabase,
+  reflectionRecordPayloadRepresentationHeads,
+  reflectionRecordPayloadRepresentations,
+  reflectionRecordPublications,
+  reflectionRecordSuccessors,
+  reflectionRecords,
+  type ReflectionSourceReader,
 } from "@nautilo/db";
+import type { OrganizerEvidenceBudget } from "@nautilo/reflection";
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import {
+  classifyPersonalMemoryEvidence,
+  PersonalMemoryEvidenceChangedError,
   stenographerJournalEventObservationFingerprint,
   stenographerJournalRollupObservationFingerprint,
+  decodeDurableRecordEnvelope,
   type MemorySourceDerivation,
+  type PersonalMemoryEvidence,
   type PersonalMemoryEvidencePort,
   type RecordRepositorySelection,
 } from "@nautilo/reflection-bridge/server";
@@ -52,7 +64,7 @@ type Audience = Readonly<{
 }>;
 
 export interface PersonalMemoryEvidencePortOptions {
-  readonly db: DirectDatabase;
+  readonly db: ReflectionSourceReader;
   readonly selected: () => RecordRepositorySelection;
   readonly fingerprints?: Pick<OrdinarySourceFingerprintPort, "memory">;
   readonly fingerprintProfileSoul: (input: ProfileSoulFingerprintInput) => string;
@@ -66,6 +78,181 @@ export interface PersonalMemoryEvidencePortOptions {
     ): Promise<Readonly<{ roomId: string }> | null>;
     getRoomWithAccess(roomId: string): Promise<CurrentRoomAccess | null>;
   }>;
+}
+
+function sameAuthorityLeaves(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return JSON.stringify([...left].sort())
+    === JSON.stringify([...right].sort());
+}
+
+/**
+ * Revalidate one Journal prompt through caller-supplied current readers. Every
+ * direct prompt dependency is opened before payer traversal, so an incomplete
+ * or budget-bounded service classification cannot conceal a changed source.
+ * The caller separately decides whether an exact accepted binding merely
+ * needs current evidence or a rewritten input must still classify `service`.
+ */
+export async function classifyCurrentJournalRecoveryInputs(input: Readonly<{
+  dependencies: readonly DurableModelExposureDependency[] | undefined;
+  ports: PersonalMemoryEvidencePort;
+  budget: OrganizerEvidenceBudget;
+  readRetiredJournalPredecessor?: PersonalMemoryEvidencePort["readRecord"];
+}>): Promise<PersonalMemoryEvidence | null> {
+  if (!input.dependencies?.length) return null;
+  try {
+    for (const dependency of input.dependencies) {
+      if (dependency.kind === "source") {
+        if (!dependency.observedRevision
+          || !dependency.observedContentFingerprint
+          || await input.ports.readSource(dependency) === null) return null;
+        continue;
+      }
+      const record = await input.ports.readRecord(dependency);
+      if (record === null
+        || record.lifecycle !== "current"
+        || record.processingGeneration
+          !== dependency.observedProcessingGeneration
+        || !sameAuthorityLeaves(
+          record.semantic.terminalAuthorityLeafHandles,
+          dependency.terminalAuthorityLeafHandles,
+        )) return null;
+    }
+    return await classifyPersonalMemoryEvidence({
+      dependencies: input.dependencies,
+      ports: input.ports,
+      budget: input.budget,
+      ...(input.readRetiredJournalPredecessor === undefined ? {} : {
+        readRetiredJournalPredecessor: input.readRetiredJournalPredecessor,
+      }),
+    });
+  } catch (error) {
+    if (error instanceof PersonalMemoryEvidenceChangedError) return null;
+    throw error;
+  }
+}
+
+type MemoryEvidenceRecordDependency = Extract<
+  DurableModelExposureDependency,
+  { kind: "record" }
+>;
+
+/**
+ * Open one current ordinary Record entirely through the supplied reader. This
+ * keeps a manual Journal dispatch proof on its already-held transaction rather
+ * than re-entering the shared pool through the long-lived Reflection runtime.
+ */
+export async function readCurrentOrdinaryMemoryEvidenceRecordWith(
+  db: ReflectionSourceReader,
+  dependency: MemoryEvidenceRecordDependency,
+) {
+  const rows = await db.select({
+    recordRef: reflectionRecords.recordId,
+    lifecycle: reflectionRecords.lifecycle,
+    structuralHeight: reflectionRecords.structuralHeight,
+    processingGeneration: reflectionRecords.processingGeneration,
+    producerPolicyVersion: reflectionRecords.producerPolicyVersion,
+    representationGeneration:
+      reflectionRecordPayloadRepresentationHeads.currentRepresentationGeneration,
+    payloadBytes:
+      reflectionRecordPayloadRepresentations.plaintextPayloadBytes,
+  }).from(reflectionRecords)
+    .innerJoin(reflectionRecordPayloadRepresentationHeads, and(
+      eq(
+        reflectionRecordPayloadRepresentationHeads.recordId,
+        reflectionRecords.recordId,
+      ),
+      eq(
+        reflectionRecordPayloadRepresentationHeads.representation,
+        "ordinary",
+      ),
+    ))
+    .innerJoin(reflectionRecordPayloadRepresentations, and(
+      eq(
+        reflectionRecordPayloadRepresentations.recordId,
+        reflectionRecordPayloadRepresentationHeads.recordId,
+      ),
+      eq(
+        reflectionRecordPayloadRepresentations.representation,
+        reflectionRecordPayloadRepresentationHeads.representation,
+      ),
+      eq(
+        reflectionRecordPayloadRepresentations.representationGeneration,
+        reflectionRecordPayloadRepresentationHeads.currentRepresentationGeneration,
+      ),
+    ))
+    .where(and(
+      eq(reflectionRecords.recordId, dependency.recordRef),
+      eq(reflectionRecords.disposition, "available"),
+    ))
+    .limit(2);
+  if (rows.length !== 1) return null;
+  const row = rows[0]!;
+  if (!(row.payloadBytes instanceof Uint8Array)) return null;
+  const publications = await db.select({
+    id: reflectionRecordPublications.publicationId,
+  }).from(reflectionRecordPublications).where(and(
+    eq(reflectionRecordPublications.recordId, dependency.recordRef),
+    eq(reflectionRecordPublications.representation, "ordinary"),
+    eq(
+      reflectionRecordPublications.representationGeneration,
+      row.representationGeneration,
+    ),
+    eq(reflectionRecordPublications.state, "complete"),
+  )).limit(2);
+  if (publications.length !== 1) return null;
+  try {
+    const record = decodeDurableRecordEnvelope({
+      recordRef: row.recordRef,
+      lifecycle: row.lifecycle,
+      structuralHeight: row.structuralHeight,
+      processingGeneration: row.processingGeneration,
+      payloadBytes: row.payloadBytes,
+    });
+    return record.semantic.producer.policyVersion === row.producerPolicyVersion
+      ? record
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Transaction-bound historical Journal ancestry reader. */
+export async function readRetiredJournalMemoryEvidenceRecordWith(
+  db: ReflectionSourceReader,
+  dependency: MemoryEvidenceRecordDependency,
+  roomId: string,
+) {
+  const record = await readCurrentOrdinaryMemoryEvidenceRecordWith(
+    db,
+    dependency,
+  );
+  if (record === null
+    || (record.lifecycle !== "superseded" && record.lifecycle !== "resolved")
+    || record.processingGeneration
+      !== dependency.observedProcessingGeneration + 1
+    || record.semantic.producer.producerRef !== "stenographer"
+    || !record.semantic.sourceOwnedKind?.startsWith("journal_event:")
+    || !record.semantic.anchors.some((anchor) =>
+      anchor.kind === "room"
+      && anchor.role === "origin"
+      && anchor.anchorRef === roomId
+    )) return null;
+  const successors = await db.select({
+    predecessorRecordRef: reflectionRecordSuccessors.predecessorRecordId,
+    relation: reflectionRecordSuccessors.relation,
+  }).from(reflectionRecordSuccessors).where(eq(
+    reflectionRecordSuccessors.predecessorRecordId,
+    dependency.recordRef,
+  )).limit(2);
+  return successors.length === 1
+    && successors[0]!.predecessorRecordRef === dependency.recordRef
+    && successors[0]!.relation
+      === (record.lifecycle === "superseded" ? "supersedes" : "resolves")
+    ? record
+    : null;
 }
 
 const MESSAGE_REF = /^message:([1-9][0-9]*)$/u;
@@ -367,7 +554,7 @@ export function createPersonalMemoryEvidencePort(
         row === null
         || row.content === null
         || row.type === null
-        || row.contentRevision < 1
+        || row.contentRevision < 0
         || options.fingerprints === undefined
         || !exactObservedSource(
           dependency,
@@ -412,7 +599,9 @@ export function createPersonalMemoryEvidencePort(
           value.includesPublicBoundary
         ),
       };
-      return ancestry === undefined
+      // The fingerprint establishes current legacy content. Revision zero
+      // still cannot establish exclusive authorship for personal funding.
+      return row.contentRevision === 0 || ancestry === undefined
         ? sourceResult(currentAudience, { kind: "unknown" })
         : sourceResult(currentAudience, {
             kind: "derived",

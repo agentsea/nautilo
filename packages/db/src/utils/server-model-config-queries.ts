@@ -71,6 +71,18 @@ export type ServerModelConfigPatch = Partial<
 
 export type ServerModelConfigDb = Pick<Database, "insert" | "select">;
 
+/** Read the raw singleton row when a consumer owns its fallback semantics. */
+export async function getServerModelConfigRow(
+  db: Pick<Database, "select">,
+): Promise<ServerModelConfigRow | null> {
+  const [row] = await db
+    .select()
+    .from(serverModelConfig)
+    .where(eq(serverModelConfig.id, SERVER_MODEL_CONFIG_ID))
+    .limit(1);
+  return row ?? null;
+}
+
 /** Pure default-fallback resolver. No DB I/O. */
 export function resolveServerModelConfig(
   row: ServerModelConfigRow | null | undefined,
@@ -106,12 +118,7 @@ export async function getServerModelConfig(
   db: ServerModelConfigDb,
   defaults: ServerModelConfigDefaults,
 ): Promise<ResolvedServerModelConfig> {
-  const [row] = await db
-    .select()
-    .from(serverModelConfig)
-    .where(eq(serverModelConfig.id, SERVER_MODEL_CONFIG_ID))
-    .limit(1);
-  return resolveServerModelConfig(row ?? null, defaults);
+  return resolveServerModelConfig(await getServerModelConfigRow(db), defaults);
 }
 
 export async function upsertServerModelConfig(

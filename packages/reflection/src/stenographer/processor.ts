@@ -64,12 +64,13 @@ export type ExtractionProcessorResult =
   | {
       ok: false;
       errorCode: "invalid_output" | "input_too_large";
-      attempts: 0 | 2;
+      attempts: 0 | 1 | 2;
     };
 
 export async function runStenographerExtraction(input: {
   snapshot: StenographerExtractionSnapshot;
   invoke: StenographerModelInvoker;
+  allowOutputRepair?: boolean;
   signal?: AbortSignal;
   validateProposal?: (
     proposal: StenographerProposal,
@@ -95,14 +96,15 @@ export async function runStenographerExtraction(input: {
     ...(input.validateProposal
       ? { validateProposal: input.validateProposal }
       : {}),
-    repair: (_invalid, failure) =>
-      input.invoke(
+    ...(input.allowOutputRepair === false ? {} : {
+      repair: (_invalid, failure) => input.invoke(
         `${EXTRACTION_CONTRACT}\n\nYour previous response was invalid (${failure.reason}). Return a corrected JSON object only.\n\n${projection.prompt}`,
         input.signal,
       ),
+    }),
   });
   if (!validation.ok) {
-    return { ok: false, errorCode: "invalid_output", attempts: 2 };
+    return { ok: false, errorCode: "invalid_output", attempts: validation.attempts };
   }
   return {
     ok: true,
@@ -150,6 +152,7 @@ function parseCompactionResponse(response: string):
 export async function runStenographerCompaction(input: {
   prompt: string;
   invoke: StenographerModelInvoker;
+  allowOutputRepair?: boolean;
   signal?: AbortSignal;
   modelExposure?: StenographerCompactionModelExposure;
 }): Promise<
@@ -159,7 +162,7 @@ export async function runStenographerCompaction(input: {
       attempts: 1 | 2;
       modelExposure: StenographerCompactionModelExposure | null;
     }
-  | { ok: false; errorCode: "invalid_output"; attempts: 2 }
+  | { ok: false; errorCode: "invalid_output"; attempts: 1 | 2 }
 > {
   const prompt = `${COMPACTION_CONTRACT}\n\n${input.prompt}`;
   const first = parseCompactionResponse(
@@ -171,6 +174,9 @@ export async function runStenographerCompaction(input: {
       attempts: 1,
       modelExposure: input.modelExposure ?? null,
     };
+  }
+  if (input.allowOutputRepair === false) {
+    return { ok: false, errorCode: "invalid_output", attempts: 1 };
   }
   const second = parseCompactionResponse(
     await input.invoke(

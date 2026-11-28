@@ -301,6 +301,7 @@ export {
   createProductionReflectionMemoryRuntime,
   type ProductionReflectionMemoryInput,
   type ProductionReflectionMemoryRuntime,
+  reflectionModelOperationId,
 } from "./reflection/production-reflection-memory";
 export { forkLanggraphExecutor } from "./executors/fork-langgraph-executor";
 export { classifyTurnKind, type TurnKind, type TurnKindSignal } from "./executors/turn-kind";
@@ -780,7 +781,15 @@ export {
 export { MemoryReviewWorker, type MemoryReviewClaim, type MemoryReviewRepository,
   type MemoryReviewWorkerDeps, type MemoryReviewInput, type AdmittedMemoryReviewModel, type MemoryReviewPhase,
   type MemoryReviewPublicationState } from "./memory-review/worker";
-export { PostgresMemoryReviewRepository, selectMemoryReviewPrefix } from "./memory-review/repository";
+export {
+  memoryReviewOrdinaryPolicyAvailable,
+  memoryReviewSourceRevisionFingerprint,
+  readMemoryReviewSourceRevisionSnapshot,
+  PostgresMemoryReviewRepository,
+  selectMemoryReviewPrefix,
+  type MemoryReviewSourceTurn,
+  type MemoryReviewSourceRevision,
+} from "./memory-review/repository";
 export { memoryReviewAdmission, finishMemoryReviewTurn } from "./memory-review/admission";
 export { recoverMemoryReviewTurnsAtStartup, readOrdinaryMemoryReviewCheckpoint } from "./memory-review/startup-recovery";
 
@@ -805,6 +814,11 @@ export { extractionModelExposureDependencies, compactionModelExposureDependencie
 export { createRoomSideModelInvoker } from "./stenographer/model-invoker";
 export type { AdmittedStenographerModel } from "./stenographer/ordinary-stenographer-data-operation";
 
-export type { ExtractionClaim, CompactionClaim } from "./stenographer/repository";
+export {
+  resolveAcceptedOrdinaryCompactionCoordinates,
+  resolveCurrentOrdinaryCompactionCoordinates,
+  type ExtractionClaim,
+  type CompactionClaim,
+} from "./stenographer/repository";
 
 export type { AdmitReflectionMemoryModelRequest, AdmittedReflectionMemoryModel } from "./reflection/production-reflection-memory";

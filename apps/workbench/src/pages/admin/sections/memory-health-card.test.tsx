@@ -6,12 +6,12 @@ import type { CapabilitySlug, MemoryAdminStatus } from "@nautilo/types";
 
 let capabilities = new Set<CapabilitySlug>();
 let load: () => Promise<MemoryAdminStatus>;
-const retry = mock(async () => ({ requested: 1 }));
 const set = mock(async () => ({}));
 mock.module("../../../hooks/use-can", () => ({ useCan: () => (cap: CapabilitySlug) => capabilities.has(cap) }));
 mock.module("../../../lib/api", () => ({ apiClient: { admin: {
-  memoryStatus: { get: () => load(), retry }, serverContext: { set },
+  memoryStatus: { get: () => load() }, serverContext: { set },
 } } }));
+mock.module("./memory-recovery-card", () => ({ MemoryRecoveryCard: () => null }));
 const { MemorySection } = await import("./memory-health-card");
 
 function fixture(): MemoryAdminStatus {
@@ -27,7 +27,7 @@ function fixture(): MemoryAdminStatus {
 }
 beforeEach(() => {
   reapplyHappyDomGlobals(); cleanup(); capabilities = new Set(["read_server_settings"]);
-  load = async () => fixture(); retry.mockClear(); set.mockClear();
+  load = async () => fixture(); set.mockClear();
 });
 afterEach(cleanup);
 const show = () => render(<MemoryRouter><MemorySection /></MemoryRouter>);
@@ -50,18 +50,15 @@ test("failed refresh preserves last good values visibly stale", async () => {
   await waitFor(() => expect(view.getByRole("alert").textContent).toContain("stale"));
   expect(view.getByText("Waiting for more conversation")).toBeTruthy();
 });
-test("focus refresh coalesces with an in-flight read and retry requires operator authority", async () => {
+test("focus refresh coalesces with an in-flight read and does not duplicate background retry controls", async () => {
   capabilities.add("manage_server_operations");
   let calls = 0;
   let resolve!: (value: MemoryAdminStatus) => void;
   load = () => { calls++; return new Promise(done => { resolve = done; }); };
   const view = show(); window.dispatchEvent(new Event("focus")); window.dispatchEvent(new Event("focus"));
   expect(calls).toBe(1); resolve(fixture());
-  await waitFor(() => expect(view.getByText("Retry failed reviews")).toBeTruthy());
-  load = async () => fixture();
-  fireEvent.click(view.getByText("Retry failed reviews"));
-  await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(view.getByText("1 failed review scheduled for normal retry.")).toBeTruthy());
+  await waitFor(() => expect(view.getByText("Pause automatic review")).toBeTruthy());
+  expect(view.queryByText("Retry failed reviews")).toBeNull();
 });
 
 test("pause, model outage and saved follow-up states do not claim healthy completion", async () => {

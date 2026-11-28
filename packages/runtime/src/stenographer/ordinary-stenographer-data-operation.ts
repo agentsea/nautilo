@@ -1,4 +1,5 @@
 import { getSharedDirectDb, type DirectDatabase } from "@nautilo/db";
+import { PersonalMemoryEvidenceChangedError } from "@nautilo/reflection-bridge/server";
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import { error as logError, log, warn } from "@nautilo/logger";
 import type {
@@ -236,7 +237,7 @@ export function createOrdinaryStenographerIntentAdapter(
 ): StenographerIntentAdapter {
   const logger = safeLogger(options.logger);
   const db = () => options.db ?? getSharedDirectDb();
-  const currentTime = (fallback: Date) => options.now?.() ?? new Date(fallback);
+  const currentTime = () => options.now?.() ?? new Date();
   const claimExtraction = options.claimExtraction ?? (async (input) =>
     input.lane === "rebuild"
       ? claimJournalRebuildExtraction(input.roomId, {
@@ -259,7 +260,7 @@ export function createOrdinaryStenographerIntentAdapter(
       if (claim === null) {
         return { publish: () => Promise.resolve(unavailable()) };
       }
-      let modelId = input.modelId;
+      let modelId = claim.manualRecoveryModelId ?? input.modelId;
       if (claim.plan.trigger === "skip_excluded") {
         return {
           publish: async (context: StenographerPublicationContext) => {
@@ -268,7 +269,7 @@ export function createOrdinaryStenographerIntentAdapter(
                 claim,
                 operations: [],
                 modelId: null,
-                now: currentTime(input.now),
+                now: currentTime(),
                 ...(context.ordinaryFallbackReason === undefined
                   ? {}
                   : { ordinaryFallbackReason: context.ordinaryFallbackReason }),
@@ -299,7 +300,7 @@ export function createOrdinaryStenographerIntentAdapter(
                 claim,
                 errorCode: "persistence",
                 modelId: null,
-                now: currentTime(input.now),
+                now: currentTime(),
                 ...(options.db === undefined ? {} : { db: options.db }),
               });
               return outcome(input.signal.aborted ? "cancelled" : "failed");
@@ -328,7 +329,7 @@ export function createOrdinaryStenographerIntentAdapter(
             claim,
             errorCode: result.errorCode,
             modelId,
-            now: currentTime(input.now),
+            now: currentTime(),
             ...(options.db === undefined ? {} : { db: options.db }),
           });
           return { publish: () => Promise.resolve(
@@ -343,7 +344,7 @@ export function createOrdinaryStenographerIntentAdapter(
                 claim,
                 operations: result.output.operations,
                 modelId,
-                now: currentTime(input.now),
+                now: currentTime(),
                 ...(context.ordinaryFallbackReason === undefined
                   ? {}
                   : { ordinaryFallbackReason: context.ordinaryFallbackReason }),
@@ -383,7 +384,7 @@ export function createOrdinaryStenographerIntentAdapter(
                 claim,
                 errorCode: "persistence",
                 modelId,
-                now: currentTime(input.now),
+                now: currentTime(),
                 ...(options.db === undefined ? {} : { db: options.db }),
               });
               return outcome(input.signal.aborted ? "cancelled" : "failed");
@@ -395,7 +396,7 @@ export function createOrdinaryStenographerIntentAdapter(
           claim,
           errorCode: mapModelFailure(error) as StenographerErrorCode,
           modelId,
-          now: currentTime(input.now),
+          now: currentTime(),
           ...(options.db === undefined ? {} : { db: options.db }),
         });
         return { publish: () => Promise.resolve(
@@ -409,7 +410,7 @@ export function createOrdinaryStenographerIntentAdapter(
       if (claim === null) {
         return { publish: () => Promise.resolve(unavailable()) };
       }
-      let modelId = input.modelId;
+      let modelId = claim.manualRecoveryModelId ?? input.modelId;
       try {
         const admitted = await options.admitCompactionModel?.(claim, compactionModelExposureDependencies(claim));
         if (admitted !== undefined) modelId = admitted.modelId;
@@ -430,7 +431,7 @@ export function createOrdinaryStenographerIntentAdapter(
             claim,
             errorCode: result.errorCode,
             modelId,
-            now: currentTime(input.now),
+            now: currentTime(),
             ...(options.db === undefined ? {} : { db: options.db }),
           });
           return { publish: () => Promise.resolve(
@@ -445,7 +446,7 @@ export function createOrdinaryStenographerIntentAdapter(
                 claim,
                 content: result.content,
                 modelId,
-                now: currentTime(input.now),
+                now: currentTime(),
                 ...(context.ordinaryFallbackReason === undefined
                   ? {}
                   : { ordinaryFallbackReason: context.ordinaryFallbackReason }),
@@ -479,7 +480,7 @@ export function createOrdinaryStenographerIntentAdapter(
                 claim,
                 errorCode: "persistence",
                 modelId,
-                now: currentTime(input.now),
+                now: currentTime(),
                 ...(options.db === undefined ? {} : { db: options.db }),
               });
               return outcome(input.signal.aborted ? "cancelled" : "failed");
@@ -489,9 +490,10 @@ export function createOrdinaryStenographerIntentAdapter(
       } catch (error) {
         await failCompactionWork({
           claim,
-          errorCode: mapModelFailure(error) as StenographerErrorCode,
+          errorCode: claim.requiresCurrentServicePayer && error instanceof PersonalMemoryEvidenceChangedError
+            ? "input_authority_unavailable" : mapModelFailure(error) as StenographerErrorCode,
           modelId,
-          now: currentTime(input.now),
+          now: currentTime(),
           ...(options.db === undefined ? {} : { db: options.db }),
         });
         return { publish: () => Promise.resolve(
@@ -522,7 +524,7 @@ export function createOrdinaryStenographerIntentAdapter(
         publish: async () => {
           if (options.convertNextLegacy === undefined) return unavailable();
           const conversion = await options.convertNextLegacy({
-            now: currentTime(input.now),
+            now: options.now?.() ?? new Date(input.now),
           });
           return conversion.roomId === null
             ? unavailable()

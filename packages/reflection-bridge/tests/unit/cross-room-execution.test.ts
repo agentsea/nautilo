@@ -92,6 +92,105 @@ describe("cross-Room exact-set execution contract", () => {
     expect(() => assertCrossRoomPublicationPlan(publicationPlan())).not.toThrow();
   });
 
+  test("accepts exact revision-zero ordinary Memory evidence and fence", () => {
+    const plan = publicationPlan();
+    const selectedInputs = plan.selectedInputs.map((input) =>
+      input.kind === "source" && input.sourceKind === "memory"
+        ? {
+            ...input,
+            contentGeneration: 0,
+            crossRoomFence: {
+              memoryRef: "authored",
+              embeddingRevision: 0,
+              embeddingProvenance: {
+                provider: "openai" as const,
+                canonicalModel: "text-embedding-3-small",
+                dimensions: 1_536 as const,
+                contractVersion: 1 as const,
+              },
+              updatedAtCoordinate: "2026-08-20T00:00:00.000Z",
+              authorityNamespaceRefs: ["namespace:c"],
+              audience: {
+                humanRefs: ["human:alice"],
+                includesPublicBoundary: false,
+              },
+            },
+          }
+        : input
+    );
+    const modelExposureDependencies = selectedInputs.map((input) => input.kind === "record"
+      ? {
+          kind: "record" as const,
+          recordRef: input.recordRef,
+          observedProcessingGeneration: input.processingGeneration,
+          terminalAuthorityLeafHandles: [input.read.namespaceRef],
+        }
+      : {
+          kind: "source" as const,
+          sourceKind: input.sourceKind,
+          logicalSourceRef: input.logicalSourceRef,
+          observedRevision: "0",
+          observedContentFingerprint: "fingerprint:memory:authored:0",
+          terminalAuthorityLeafHandle: input.read.namespaceRef,
+        });
+
+    expect(() => assertCrossRoomPublicationPlan({
+      ...plan,
+      selectedInputs,
+      modelExposureDependencies,
+    })).not.toThrow();
+    expect(modelExposureDependencies[2]).toMatchObject({
+      observedRevision: "0",
+      observedContentFingerprint: "fingerprint:memory:authored:0",
+    });
+  });
+
+  test("rejects stale, malformed, and negative ordinary Memory generations", () => {
+    const plan = publicationPlan();
+    const memory = plan.selectedInputs[2]!;
+    if (memory.kind !== "source") throw new Error("fixture invariant");
+    const zeroInputs = [
+      plan.selectedInputs[0]!,
+      plan.selectedInputs[1]!,
+      { ...memory, contentGeneration: 0 },
+    ];
+    const exactExposures = zeroInputs.map((input) => input.kind === "record"
+      ? {
+          kind: "record" as const,
+          recordRef: input.recordRef,
+          observedProcessingGeneration: input.processingGeneration,
+          terminalAuthorityLeafHandles: [input.read.namespaceRef],
+        }
+      : {
+          kind: "source" as const,
+          sourceKind: input.sourceKind,
+          logicalSourceRef: input.logicalSourceRef,
+          observedRevision: "0",
+          observedContentFingerprint: "fingerprint:memory:authored:0",
+          terminalAuthorityLeafHandle: input.read.namespaceRef,
+        });
+
+    expect(() => assertCrossRoomPublicationPlan({
+      ...plan,
+      selectedInputs: zeroInputs,
+      modelExposureDependencies: exactExposures.map((dependency) =>
+        dependency.kind === "source"
+          ? { ...dependency, observedRevision: "1" }
+          : dependency
+      ),
+    })).toThrow("stale or substituted");
+    for (const contentGeneration of [-1, Number.NaN]) {
+      expect(() => assertCrossRoomPublicationPlan({
+        ...plan,
+        selectedInputs: [
+          plan.selectedInputs[0]!,
+          plan.selectedInputs[1]!,
+          { ...memory, contentGeneration },
+        ],
+      })).toThrow("nonnegative safe integer");
+    }
+  });
+
   test("requires a saved publication plan to match every candidate input", () => {
     const candidate = candidatePlan();
     const publication = publicationPlan();
@@ -286,6 +385,23 @@ describe("cross-Room exact-set execution contract", () => {
       ],
       budget: { ...plan.budget, maxInputItems: 2 },
     })).not.toThrow();
+
+    expect(() => assertCrossRoomCandidatePlan({
+      ...plan,
+      inputs: [
+        plan.inputs[0]!,
+        {
+          ...memory,
+          contentGeneration: 0,
+          crossRoomFence: {
+            ...memory.crossRoomFence,
+            embeddingRevision: 0,
+            protectedAccessRevision: 0,
+          },
+        },
+      ],
+      budget: { ...plan.budget, maxInputItems: 2 },
+    })).toThrow("protected source embedding revision must be positive");
   });
 
   test("intersects one exact alternative per input and preserves the public boundary only universally", () => {

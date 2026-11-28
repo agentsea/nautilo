@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   actors,
   and,
@@ -20,12 +20,14 @@ import {
   reflectionRecordPayloadRepresentationHeads,
   reflectionRecordPayloadRepresentations,
   reflectionRecords,
+  resolveFreshCompactionAttemptReplaySafety,
   resolveModelAttemptReplaySafety,
   roomMembers,
   roomEventRollups,
   roomEvents,
   roomJournalBatches,
   roomJournalCryptoPublications,
+  roomJournalModelRecoveries,
   roomJournalState,
   rooms,
   sessionMessages,
@@ -34,6 +36,7 @@ import {
   type DirectDatabase,
   type StenographerCompactionAcceptedPlan,
 } from "@nautilo/db";
+import { parseMemoryOperationBinding } from "@nautilo/types";
 import {
   planStenographerBatch,
   type StenographerBatchPlan,
@@ -50,6 +53,7 @@ import {
   planJournalCompaction,
   type JournalCompactionPlan,
 } from "@nautilo/reflection";
+import { compactionModelExposureDependencies } from "./semantic-adapter";
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import {
   stenographerJournalEventObservationFingerprint,
@@ -63,6 +67,7 @@ import {
 export type StenographerErrorCode =
   | "provider"
   | "provider_outcome_unknown"
+  | "input_authority_unavailable"
   | "timeout"
   | "invalid_output"
   | "input_too_large"
@@ -82,6 +87,8 @@ export interface ExtractionClaim {
   ownerId: string;
   leaseToken: string;
   attemptCount: number;
+  /** Durable job state proves the previous provider result was rejected before publication. */
+  previousModelResultKnownNonusable?: true;
   lane: "live" | "historical";
   plan: StenographerBatchPlan;
   /** Previously processed same-lane rows; context-only and never citable. */
@@ -92,6 +99,9 @@ export interface ExtractionClaim {
   namespaceId?: string;
   /** M230 — CAS token for an edit-triggered full Room rebuild. */
   rebuildGeneration?: number | null;
+  /** One operator-approved fresh service call, spent by the funding boundary. */
+  manualModelRecoveryId?: string;
+  manualRecoveryModelId?: string;
 }
 
 export interface CompactionClaim {
@@ -108,6 +118,10 @@ export interface CompactionClaim {
   namespaceId?: string;
   /** Exact rollup view used by the prompt; absent on legacy/test claims. */
   previousRollup?: RoomEventRollupView | null;
+  /** One operator-approved fresh service call, spent by the funding boundary. */
+  manualModelRecoveryId?: string;
+  manualRecoveryModelId?: string;
+  requiresCurrentServicePayer?: true;
 }
 
 function acceptedOrdinaryCompactionPlan(
@@ -168,6 +182,33 @@ function acceptedOrdinaryCompactionPlan(
   });
 }
 
+function currentAcceptedOrdinaryCompactionPlan(input: Readonly<{
+  acceptedPlan: Extract<StenographerCompactionAcceptedPlan, { owner: "ordinary" }>;
+  rebuildGeneration: number;
+  latestRollup: RoomEventRollupView | null;
+  allEvents: readonly EffectiveRoomEvent[];
+}>): ReturnType<typeof planJournalCompaction<EffectiveRoomEvent>> | null {
+  const eventById = new Map(input.allEvents.map(event => [event.id, event]));
+  const frozenEvents = [
+    ...input.acceptedPlan.selectedEventIds,
+    ...input.acceptedPlan.protectedTailEventIds,
+  ].map(id => eventById.get(id));
+  if (input.acceptedPlan.rebuildGeneration !== input.rebuildGeneration
+    || input.acceptedPlan.previousRollupId !== (input.latestRollup?.id ?? null)
+    || frozenEvents.some(event => event === undefined)) return null;
+  const planned = planJournalCompaction({
+    events: frozenEvents as EffectiveRoomEvent[],
+    rollups: input.latestRollup ? [input.latestRollup] : [],
+    forceDue: true,
+  });
+  if (!planned.ok || !planned.plan) return planned;
+  if (JSON.stringify(planned.plan.selectedEvents.map(event => event.id))
+      !== JSON.stringify(input.acceptedPlan.selectedEventIds)
+    || JSON.stringify(planned.plan.protectedTail.map(event => event.id))
+      !== JSON.stringify(input.acceptedPlan.protectedTailEventIds)) return null;
+  return planned;
+}
+
 interface StateRow {
   room_id: string;
   owner_id: string;
@@ -179,8 +220,13 @@ interface StateRow {
   extraction_retry_after: string | Date | null;
   has_agent: boolean;
   upper_bound_message_id: number | string | null;
+  replay_batch_id: string | null;
   replay_batch_status: "completed" | "failed" | "running" | null;
   replay_batch_error_code: string | null;
+  replay_batch_attempt_count: number | string | null;
+  replay_batch_started_at: string | Date | null;
+  replay_batch_last_error_at: string | Date | null;
+  replay_batch_last_error_model_id: string | null;
   replay_through_message_id: number | string | null;
   historical_backfill_status: "pending" | "completed" | "not_needed";
   historical_backfill_cursor_message_id: number | string | null;
@@ -361,6 +407,28 @@ export async function candidateRoomIds(
   now: Date,
   limit = 20,
 ): Promise<string[]> {
+  const manualRecovery = db.select({ one: sql`1` })
+    .from(roomJournalModelRecoveries)
+    .where(and(
+      eq(roomJournalModelRecoveries.roomId, roomJournalBatches.roomId),
+      eq(roomJournalModelRecoveries.workKind, "extraction"),
+      eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalBatches.id}::text`),
+      eq(roomJournalModelRecoveries.rebuildGeneration, roomJournalState.rebuildGeneration),
+      eq(roomJournalModelRecoveries.observedAttempt, roomJournalBatches.attemptCount),
+      isNull(roomJournalModelRecoveries.spentAt),
+    ));
+  const spentManualInvalidOutput = db.select({ one: sql`1` })
+    .from(roomJournalModelRecoveries)
+    .where(and(
+      eq(roomJournalModelRecoveries.roomId, roomJournalBatches.roomId),
+      eq(roomJournalModelRecoveries.workKind, "extraction"),
+      eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalBatches.id}::text`),
+      eq(roomJournalModelRecoveries.rebuildGeneration, roomJournalState.rebuildGeneration),
+      eq(roomJournalModelRecoveries.targetModelId, roomJournalBatches.lastErrorModelId),
+      eq(roomJournalModelRecoveries.claimedAt, roomJournalBatches.startedAt),
+      isNotNull(roomJournalModelRecoveries.spentAt),
+      lte(roomJournalModelRecoveries.spentAt, roomJournalBatches.lastErrorAt),
+    ));
   const failedRetry = db.select({ one: sql`1` })
     .from(roomJournalBatches)
     .where(and(
@@ -372,7 +440,7 @@ export async function candidateRoomIds(
       ),
       eq(roomJournalBatches.status, "failed"),
     ));
-  const uncertainFailedAttempt = db.select({ one: sql`1` })
+  const blockedFailedAttempt = db.select({ one: sql`1` })
     .from(roomJournalBatches)
     .where(and(
       eq(roomJournalBatches.roomId, roomJournalState.roomId),
@@ -382,7 +450,14 @@ export async function candidateRoomIds(
         roomJournalState.lastProcessedMessageId,
       ),
       eq(roomJournalBatches.status, "failed"),
-      eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
+      or(
+        eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
+        and(
+          eq(roomJournalBatches.errorCode, "invalid_output"),
+          exists(spentManualInvalidOutput),
+        ),
+      ),
+      notExists(manualRecovery),
     ));
   const agentMember = db.select({ one: sql`1` })
     .from(roomMembers)
@@ -415,7 +490,7 @@ export async function candidateRoomIds(
       notInArray(rooms.kind, ["task", "access"]),
       isNull(roomJournalState.rebuildRequestedAt),
       isNull(roomJournalState.suspendedAt),
-      notExists(uncertainFailedAttempt),
+      notExists(blockedFailedAttempt),
       or(
         isNull(roomJournalState.extractionRetryAfter),
         lte(roomJournalState.extractionRetryAfter, now),
@@ -513,6 +588,28 @@ export async function historicalCandidateRoomIds(
   now: Date,
   limit = 20,
 ): Promise<string[]> {
+  const manualRecovery = db.select({ one: sql`1` })
+    .from(roomJournalModelRecoveries)
+    .where(and(
+      eq(roomJournalModelRecoveries.roomId, roomJournalBatches.roomId),
+      eq(roomJournalModelRecoveries.workKind, "extraction"),
+      eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalBatches.id}::text`),
+      eq(roomJournalModelRecoveries.rebuildGeneration, roomJournalState.rebuildGeneration),
+      eq(roomJournalModelRecoveries.observedAttempt, roomJournalBatches.attemptCount),
+      isNull(roomJournalModelRecoveries.spentAt),
+    ));
+  const spentManualInvalidOutput = db.select({ one: sql`1` })
+    .from(roomJournalModelRecoveries)
+    .where(and(
+      eq(roomJournalModelRecoveries.roomId, roomJournalBatches.roomId),
+      eq(roomJournalModelRecoveries.workKind, "extraction"),
+      eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalBatches.id}::text`),
+      eq(roomJournalModelRecoveries.rebuildGeneration, roomJournalState.rebuildGeneration),
+      eq(roomJournalModelRecoveries.targetModelId, roomJournalBatches.lastErrorModelId),
+      eq(roomJournalModelRecoveries.claimedAt, roomJournalBatches.startedAt),
+      isNotNull(roomJournalModelRecoveries.spentAt),
+      lte(roomJournalModelRecoveries.spentAt, roomJournalBatches.lastErrorAt),
+    ));
   const agentMember = db.select({ one: sql`1` })
     .from(roomMembers)
     .innerJoin(actors, eq(actors.id, roomMembers.actorId))
@@ -520,7 +617,7 @@ export async function historicalCandidateRoomIds(
       eq(roomMembers.roomId, rooms.id),
       eq(actors.kind, "agent"),
     ));
-  const uncertainFailedAttempt = db.select({ one: sql`1` })
+  const blockedFailedAttempt = db.select({ one: sql`1` })
     .from(roomJournalBatches)
     .where(and(
       eq(roomJournalBatches.roomId, roomJournalState.roomId),
@@ -530,7 +627,14 @@ export async function historicalCandidateRoomIds(
         roomJournalState.historicalBackfillCursorMessageId,
       ),
       eq(roomJournalBatches.status, "failed"),
-      eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
+      or(
+        eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
+        and(
+          eq(roomJournalBatches.errorCode, "invalid_output"),
+          exists(spentManualInvalidOutput),
+        ),
+      ),
+      notExists(manualRecovery),
     ));
   const result = await db.select({ room_id: roomJournalState.roomId })
     .from(roomJournalState)
@@ -539,7 +643,7 @@ export async function historicalCandidateRoomIds(
       notInArray(rooms.kind, ["task", "access"]),
       isNull(roomJournalState.rebuildRequestedAt),
       isNull(roomJournalState.suspendedAt),
-      notExists(uncertainFailedAttempt),
+      notExists(blockedFailedAttempt),
       eq(roomJournalState.historicalBackfillStatus, "pending"),
       isNotNull(roomJournalState.historicalBackfillCursorMessageId),
       isNotNull(roomJournalState.historicalBackfillTargetMessageId),
@@ -738,6 +842,26 @@ async function loadPromptJournal(
   };
 }
 
+/** Recovery-only fence for ordinary native event payload head replacement. */
+async function lockOrdinaryCompactionRepresentationHeads(
+  tx: JournalExecutor,
+  roomId: string,
+): Promise<void> {
+  await tx.select({
+    recordId: reflectionRecordPayloadRepresentationHeads.recordId,
+  }).from(reflectionRecordPayloadRepresentationHeads)
+    .innerJoin(roomEvents, and(
+      eq(roomEvents.recordId, reflectionRecordPayloadRepresentationHeads.recordId),
+      eq(roomEvents.projectionKind, "native"),
+    ))
+    .where(and(
+      eq(roomEvents.roomId, roomId),
+      eq(reflectionRecordPayloadRepresentationHeads.representation, "ordinary"),
+    ))
+    .orderBy(reflectionRecordPayloadRepresentationHeads.recordId)
+    .for("update", { of: reflectionRecordPayloadRepresentationHeads });
+}
+
 async function loadPriorContextRows(
   tx: JournalExecutor,
   input: {
@@ -919,15 +1043,25 @@ export async function tryClaimRoom(
             replay_batch.through_message_id_inclusive,
             ${pendingUpperBoundExpression}
           ) AS upper_bound_message_id,
+          replay_batch.id AS replay_batch_id,
           replay_batch.status AS replay_batch_status,
           replay_batch.error_code AS replay_batch_error_code,
+          replay_batch.attempt_count AS replay_batch_attempt_count,
+          replay_batch.started_at AS replay_batch_started_at,
+          replay_batch.last_error_at AS replay_batch_last_error_at,
+          replay_batch.last_error_model_id AS replay_batch_last_error_model_id,
           replay_batch.through_message_id_inclusive AS replay_through_message_id
         FROM room_journal_state rjs
         INNER JOIN rooms r ON r.id = rjs.room_id
         LEFT JOIN LATERAL (
           SELECT
+            rjb.id,
             rjb.status,
             rjb.error_code,
+            rjb.attempt_count,
+            rjb.started_at,
+            rjb.last_error_at,
+            rjb.last_error_model_id,
             rjb.through_message_id_inclusive
           FROM room_journal_batches rjb
           WHERE rjb.room_id = r.id
@@ -959,9 +1093,83 @@ export async function tryClaimRoom(
     const state = stateRows[0];
     if (!state || state.kind === "task" || state.kind === "access") return null;
     if (!state.has_agent || state.suspended_at !== null) return null;
-    if (
+    const replayAttempt = state.replay_batch_attempt_count === null
+      || state.replay_batch_attempt_count === undefined
+      ? null
+      : asNumber(state.replay_batch_attempt_count);
+    const [spentManualInvalidOutput] =
       state.replay_batch_status === "failed"
-      && state.replay_batch_error_code === "provider_outcome_unknown"
+      && state.replay_batch_error_code === "invalid_output"
+      && state.replay_batch_id !== null
+      && state.replay_batch_started_at != null
+      && state.replay_batch_last_error_at != null
+      && state.replay_batch_last_error_model_id != null
+      && state.rebuild_generation != null
+        ? await tx.select({ id: roomJournalModelRecoveries.id })
+            .from(roomJournalModelRecoveries)
+            .where(and(
+              eq(roomJournalModelRecoveries.roomId, roomId),
+              eq(roomJournalModelRecoveries.workKind, "extraction"),
+              eq(roomJournalModelRecoveries.workId, state.replay_batch_id),
+              eq(roomJournalModelRecoveries.rebuildGeneration, asNumber(state.rebuild_generation)),
+              eq(roomJournalModelRecoveries.targetModelId, state.replay_batch_last_error_model_id),
+              eq(roomJournalModelRecoveries.claimedAt, asDate(state.replay_batch_started_at)),
+              isNotNull(roomJournalModelRecoveries.spentAt),
+              lte(roomJournalModelRecoveries.spentAt, asDate(state.replay_batch_last_error_at)),
+            ))
+            .limit(1)
+            .for("update", { of: roomJournalModelRecoveries })
+        : [];
+    // Funding spends a manual grant only immediately before the model wire.
+    // Until then, the expired product lease remains the durable proof that a
+    // running batch owns this exact unspent grant. Reclaim only that lease;
+    // ordinary uncertain attempts still fall through to replay-safety below.
+    const reclaimingUnspentRecovery =
+      state.replay_batch_status === "running"
+      && state.replay_batch_id !== null
+      && replayAttempt !== null
+      && state.lease_token !== null
+      && state.lease_expires_at !== null
+      && asDate(state.lease_expires_at).getTime() <= now.getTime();
+    const manualRecoveryRequired =
+      state.replay_batch_status === "failed"
+      && (
+        state.replay_batch_error_code === "provider_outcome_unknown"
+        || spentManualInvalidOutput !== undefined
+      );
+    const claimingFreshRecovery =
+      manualRecoveryRequired
+      && state.replay_batch_id !== null
+      && replayAttempt !== null;
+    const [manualRecovery] = !claimingFreshRecovery && !reclaimingUnspentRecovery
+      ? []
+      : await tx.select({
+          id: roomJournalModelRecoveries.id,
+          targetModelId: roomJournalModelRecoveries.targetModelId,
+          claimLeaseToken: roomJournalModelRecoveries.claimLeaseToken,
+        }).from(roomJournalModelRecoveries).where(and(
+          eq(roomJournalModelRecoveries.roomId, roomId),
+          eq(roomJournalModelRecoveries.workKind, "extraction"),
+          eq(roomJournalModelRecoveries.workId, state.replay_batch_id!),
+          eq(roomJournalModelRecoveries.rebuildGeneration, asNumber(state.rebuild_generation)),
+          isNull(roomJournalModelRecoveries.spentAt),
+          claimingFreshRecovery
+            ? and(
+                eq(roomJournalModelRecoveries.observedAttempt, replayAttempt),
+                isNull(roomJournalModelRecoveries.claimLeaseToken),
+                isNull(roomJournalModelRecoveries.claimedAt),
+              )
+            : and(
+                lt(roomJournalModelRecoveries.observedAttempt, replayAttempt),
+                eq(roomJournalModelRecoveries.claimLeaseToken, state.lease_token!),
+                isNotNull(roomJournalModelRecoveries.claimedAt),
+                lte(roomJournalModelRecoveries.claimedAt, now),
+              ),
+        )).limit(1)
+          .for("update", { of: roomJournalModelRecoveries });
+    if (
+      manualRecoveryRequired
+      && manualRecovery === undefined
     ) {
       return null;
     }
@@ -1138,6 +1346,61 @@ export async function tryClaimRoom(
       });
     const batch = batchRows[0];
     if (!batch) throw new Error("journal batch upsert returned no row");
+    if (manualRecovery !== undefined) {
+      const [current] = await tx.select({
+        binding: roomJournalBatches.acceptedModelBinding,
+      }).from(roomJournalBatches).where(and(
+        eq(roomJournalBatches.id, batch.id),
+        eq(roomJournalBatches.roomId, roomId),
+        eq(roomJournalBatches.status, "running"),
+        eq(roomJournalBatches.attemptCount, batch.attempt_count),
+      )).limit(1).for("update", { of: roomJournalBatches });
+      if (!current) {
+        throw new Error("Manual Stenographer extraction recovery binding changed");
+      }
+      let accepted: ReturnType<typeof parseMemoryOperationBinding> | null = null;
+      if (current.binding !== null) {
+        try {
+          accepted = parseMemoryOperationBinding(current.binding);
+        } catch {
+          throw new Error("Manual Stenographer extraction recovery binding changed");
+        }
+      }
+      if (accepted !== null
+        && (accepted.kind !== "service"
+          || accepted.role !== "memorySummarization")) {
+        throw new Error("Manual Stenographer extraction recovery binding changed");
+      }
+      if (reclaimingUnspentRecovery && accepted !== null) {
+        if (accepted.modelId !== manualRecovery.targetModelId) {
+          throw new Error("Manual Stenographer extraction recovery binding changed");
+        }
+      } else if (!reclaimingUnspentRecovery && accepted !== null) {
+        await tx.update(roomJournalBatches).set({
+          acceptedModelBinding: { ...accepted, modelId: manualRecovery.targetModelId },
+        }).where(eq(roomJournalBatches.id, batch.id));
+      }
+      await tx.update(roomJournalModelRecoveries).set({
+        claimLeaseToken: leaseToken,
+        claimedAt: now,
+      }).where(and(
+        eq(roomJournalModelRecoveries.id, manualRecovery.id),
+        isNull(roomJournalModelRecoveries.spentAt),
+        reclaimingUnspentRecovery
+          ? eq(
+              roomJournalModelRecoveries.claimLeaseToken,
+              manualRecovery.claimLeaseToken!,
+            )
+          : and(
+              isNull(roomJournalModelRecoveries.claimLeaseToken),
+              isNull(roomJournalModelRecoveries.claimedAt),
+            ),
+      ));
+    }
+    const previousModelResultKnownNonusable =
+      state.replay_batch_id === batch.id
+      && state.replay_batch_status === "failed"
+      && state.replay_batch_error_code === "invalid_output";
     const replaySafety = await resolveModelAttemptReplaySafety({
       kind: "operation",
       roomId,
@@ -1145,13 +1408,12 @@ export async function tryClaimRoom(
       operationId: batch.id,
     }, {
       db: tx,
-      knownNonusableResult:
-        state.replay_batch_status === "failed"
-        && state.replay_batch_error_code === "invalid_output",
+      knownNonusableResult: previousModelResultKnownNonusable,
     });
-    if (replaySafety.decision === "block_unknown") {
+    if (replaySafety.decision === "block_unknown" && manualRecovery === undefined) {
       await tx.update(roomJournalBatches).set({
         status: "failed", errorCode: "provider_outcome_unknown", lastErrorAt: now,
+        lastErrorAttempt: roomJournalBatches.attemptCount,
       }).where(eq(roomJournalBatches.id, batch.id));
       await tx.update(roomJournalState).set({
         leaseToken: null, leaseExpiresAt: null, extractionRetryAfter: null,
@@ -1188,6 +1450,9 @@ export async function tryClaimRoom(
       ownerId: state.owner_id,
       leaseToken,
       attemptCount: asNumber(batch.attempt_count),
+      ...(previousModelResultKnownNonusable
+        ? { previousModelResultKnownNonusable: true as const }
+        : {}),
       lane,
       plan,
       priorContextRows,
@@ -1200,6 +1465,9 @@ export async function tryClaimRoom(
         state.rebuild_requested_at == null
           ? null
           : asNumber(state.rebuild_generation),
+      ...(manualRecovery === undefined
+        ? {}
+        : { manualModelRecoveryId: manualRecovery.id, manualRecoveryModelId: manualRecovery.targetModelId }),
     };
     });
   } catch (error) {
@@ -1553,12 +1821,217 @@ async function loadAllRoomEvents(
   }));
 }
 
+/**
+ * Reconstruct the exact current ordinary compaction identity without claiming
+ * a lease or mutating durable acceptance. Legacy rows created before funding
+ * bindings and accepted plans existed may use this as their recovery witness.
+ */
+export async function resolveCurrentOrdinaryCompactionCoordinates(
+  tx: JournalExecutor,
+  roomId: string,
+): Promise<Readonly<{
+  workId: string;
+  rebuildGeneration: number;
+  inputDigest: string;
+  dependencies: readonly DurableModelExposureDependency[] | undefined;
+}> | null> {
+  const [state] = await tx.select({
+    namespaceId: rooms.namespaceId,
+    rebuildGeneration: roomJournalState.rebuildGeneration,
+    rebuildRequestedAt: roomJournalState.rebuildRequestedAt,
+    acceptedBinding: roomJournalState.compactionAcceptedModelBinding,
+    acceptedPlan: roomJournalState.compactionAcceptedPlan,
+  }).from(roomJournalState)
+    .innerJoin(rooms, eq(rooms.id, roomJournalState.roomId))
+    .where(eq(roomJournalState.roomId, roomId))
+    .limit(1);
+  if (!state || state.rebuildRequestedAt !== null
+    || state.acceptedBinding !== null || state.acceptedPlan !== null) {
+    return null;
+  }
+  try {
+    await lockOrdinaryCompactionRepresentationHeads(tx, roomId);
+    const journal = await loadPromptJournal(tx, roomId, state.namespaceId);
+    const events = await loadAllRoomEvents(tx, roomId, state.namespaceId);
+    const planned = planJournalCompaction({
+      events,
+      rollups: journal.latestRollup ? [journal.latestRollup] : [],
+    });
+    if (!planned.ok || !planned.plan) return null;
+    const rebuildGeneration = state.rebuildGeneration;
+    const workId = ordinaryCompactionOperationId(roomId, rebuildGeneration, journal.latestRollup?.id ?? null, planned.plan);
+    return {
+      rebuildGeneration, workId, inputDigest: compactionInputDigest(workId, journal.latestRollup, planned.plan),
+      dependencies: compactionModelExposureDependencies({ plan: planned.plan, previousRollup: journal.latestRollup }),
+    };
+  } catch (error) {
+    if (error instanceof StenographerSourceRepresentationUnavailableError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Reconstruct the exact source behind the currently accepted ordinary plan.
+ * The caller holds the Room/state write fence when using this as a paid
+ * dispatch coordinate, so a source rewrite either precedes this read or waits
+ * until after the authorization has linearized.
+ */
+export async function resolveAcceptedOrdinaryCompactionCoordinates(
+  tx: JournalExecutor,
+  roomId: string,
+): Promise<Readonly<{
+  workId: string;
+  rebuildGeneration: number;
+  inputDigest: string;
+  dependencies: readonly DurableModelExposureDependency[] | undefined;
+}> | null> {
+  const [state] = await tx.select({
+    namespaceId: rooms.namespaceId,
+    rebuildGeneration: roomJournalState.rebuildGeneration,
+    rebuildRequestedAt: roomJournalState.rebuildRequestedAt,
+    acceptedPlan: roomJournalState.compactionAcceptedPlan,
+  }).from(roomJournalState)
+    .innerJoin(rooms, eq(rooms.id, roomJournalState.roomId))
+    .where(eq(roomJournalState.roomId, roomId))
+    .limit(1);
+  if (!state || state.rebuildRequestedAt !== null) return null;
+  let accepted: Extract<
+    StenographerCompactionAcceptedPlan,
+    { owner: "ordinary" }
+  > | null;
+  try {
+    accepted = acceptedOrdinaryCompactionPlan(state.acceptedPlan);
+  } catch {
+    return null;
+  }
+  if (accepted === null) return null;
+  try {
+    await lockOrdinaryCompactionRepresentationHeads(tx, roomId);
+    const journal = await loadPromptJournal(tx, roomId, state.namespaceId);
+    const events = await loadAllRoomEvents(tx, roomId, state.namespaceId);
+    const planned = currentAcceptedOrdinaryCompactionPlan({
+      acceptedPlan: accepted,
+      rebuildGeneration: state.rebuildGeneration,
+      latestRollup: journal.latestRollup,
+      allEvents: events,
+    });
+    if (!planned?.ok || !planned.plan) return null;
+    const workId = ordinaryCompactionOperationId(
+      roomId,
+      state.rebuildGeneration,
+      journal.latestRollup?.id ?? null,
+      planned.plan,
+    );
+    if (workId !== accepted.operationId) return null;
+    return {
+      workId,
+      rebuildGeneration: state.rebuildGeneration,
+      inputDigest: compactionInputDigest(
+        workId,
+        journal.latestRollup,
+        planned.plan,
+      ),
+      dependencies: compactionModelExposureDependencies({
+        plan: planned.plan,
+        previousRollup: journal.latestRollup,
+      }),
+    };
+  } catch (error) {
+    if (error instanceof StenographerSourceRepresentationUnavailableError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** Recompute one stored ordinary plan from its exact current source under the caller's lock. */
+export async function isCurrentOrdinaryCompactionAcceptedPlan(
+  tx: JournalExecutor,
+  roomId: string,
+): Promise<boolean> {
+  return await resolveAcceptedOrdinaryCompactionCoordinates(tx, roomId)
+    !== null;
+}
+
+// Bind a replacement to the exact ordinary input, including changes inside
+// the same event sequence window. Only the digest is stored in the grant.
+function compactionInputDigest(
+  workId: string,
+  previous: RoomEventRollupView | null,
+  plan: JournalCompactionPlan<EffectiveRoomEvent>,
+): string {
+  return createHash("sha256").update(JSON.stringify([
+    workId, previous, plan.selectedEvents, plan.protectedTail,
+  ])).digest("hex");
+}
+
+function ordinaryCompactionOperationId(
+  roomId: string,
+  rebuildGeneration: number,
+  previousRollupId: string | null,
+  plan: JournalCompactionPlan<EffectiveRoomEvent>,
+): string {
+  return `compaction:${roomId}:${rebuildGeneration}:${previousRollupId ?? "initial"}:${plan.throughEventSequence}:${plan.protectedTail.at(-1)?.sequence ?? plan.throughEventSequence}`;
+}
+
 function retryDelayMs(failureCount: number): number {
   return Math.min(15 * 60_000, 15_000 * 2 ** Math.max(0, failureCount - 1));
 }
 
+/** The caller owns the Room and state row locks for this exact reservation. */
+async function retireFreshCompactionGrant(tx: JournalExecutor, roomId: string, recoveryId: string, now: Date): Promise<boolean> {
+  const grant = roomJournalModelRecoveries;
+  const [retired] = await tx.update(roomJournalModelRecoveries).set({
+    sourceChangedAt: now, replacementInputDigest: grant.authorizedInputDigest,
+  }).where(and(eq(grant.id, recoveryId), eq(grant.roomId, roomId), eq(grant.workKind, "compaction"),
+    eq(grant.freshServiceInputs, true), isNotNull(grant.authorizedInputDigest),
+    isNull(grant.spentAt), isNull(grant.sourceChangedAt),
+  )).returning({ token: grant.claimLeaseToken });
+  if (!retired) return false;
+  const [released] = await tx.update(roomJournalState).set({
+    compactionAcceptedPlan: null, compactionAcceptedModelBinding: null,
+    compactionLeaseToken: null, compactionLeaseExpiresAt: null, compactionRetryAfter: null, updatedAt: now,
+  }).where(and(eq(roomJournalState.roomId, roomId), retired.token === null
+    ? isNull(roomJournalState.compactionLeaseToken)
+    : eq(roomJournalState.compactionLeaseToken, retired.token))).returning({ roomId: roomJournalState.roomId });
+  if (!released) throw new Error("Compaction recovery lease changed");
+  return true;
+}
+
+/** Park only the exact unspent claim. A fresh token immediately fences the
+ * failed worker. The existing expired-lease path reclaims it after backoff. */
+async function parkUnspentJournalGrant(
+  tx: Pick<DirectDatabase, "update">,
+  claim: { roomId: string; leaseToken: string; manualModelRecoveryId?: string },
+  kind: "extraction" | "compaction",
+  workId: string,
+): Promise<string | null> {
+  if (claim.manualModelRecoveryId === undefined) return null;
+  const nextToken = randomUUID();
+  const [parked] = await tx.update(roomJournalModelRecoveries)
+    .set({ claimLeaseToken: nextToken })
+    .where(and(
+      eq(roomJournalModelRecoveries.id, claim.manualModelRecoveryId),
+      eq(roomJournalModelRecoveries.roomId, claim.roomId),
+      eq(roomJournalModelRecoveries.workKind, kind),
+      eq(roomJournalModelRecoveries.workId, workId),
+      eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
+      isNull(roomJournalModelRecoveries.spentAt),
+    )).returning({ id: roomJournalModelRecoveries.id });
+  return parked ? nextToken : null;
+}
+
 export async function failExtraction(input: {
-  claim: Pick<ExtractionClaim, "batchId" | "roomId" | "leaseToken">;
+  claim: Pick<
+    ExtractionClaim,
+    | "batchId"
+    | "roomId"
+    | "leaseToken"
+    | "previousModelResultKnownNonusable"
+    | "manualModelRecoveryId"
+  >;
   errorCode: StenographerErrorCode;
   modelId: string | null;
   now?: Date;
@@ -1582,18 +2055,35 @@ export async function failExtraction(input: {
     const current = rows[0];
     if (!current) return;
     const failureCount = asNumber(current.extraction_failure_count) + 1;
+    const parkedToken = await parkUnspentJournalGrant(tx, input.claim, "extraction", input.claim.batchId);
+    if (parkedToken !== null) {
+      const retryAt = new Date(now.getTime() + retryDelayMs(failureCount));
+      await tx.update(roomJournalState).set({
+        leaseToken: parkedToken, leaseExpiresAt: retryAt, extractionRetryAfter: retryAt,
+        extractionFailureCount: failureCount, lastExtractionErrorCode: input.errorCode,
+        lastExtractionErrorAt: now, updatedAt: now,
+      }).where(eq(roomJournalState.roomId, input.claim.roomId));
+      return;
+    }
     const retryAfter = input.errorCode === "provider_outcome_unknown"
       ? null
       : new Date(now.getTime() + retryDelayMs(failureCount));
+    const preserveKnownNonusableResult =
+      input.errorCode === "input_authority_unavailable"
+      && input.claim.previousModelResultKnownNonusable === true;
     await tx
       .update(roomJournalBatches)
       .set({
         status: "failed",
-        errorCode: input.errorCode,
-        modelId: input.modelId,
-        lastErrorAt: now,
-        lastErrorAttempt: roomJournalBatches.attemptCount,
-        lastErrorModelId: input.modelId,
+        ...(preserveKnownNonusableResult
+          ? { errorCode: "invalid_output" as const }
+          : {
+              errorCode: input.errorCode,
+              modelId: input.modelId,
+              lastErrorAt: now,
+              lastErrorAttempt: roomJournalBatches.attemptCount,
+              lastErrorModelId: input.modelId,
+            }),
       })
       .where(
         and(
@@ -1640,6 +2130,9 @@ export async function tryClaimCompactionRoom(
       compaction_lease_expires_at: string | Date | null;
       compaction_retry_after: string | Date | null;
       last_compaction_error_code: string | null;
+      last_compaction_error_at: string | Date | null;
+      last_compaction_error_attempt: number | string | null;
+      last_compaction_error_model_id: string | null;
       compaction_failure_count: number | string;
       compaction_last_attempt_known_nonusable: boolean;
       rebuild_generation: number | string;
@@ -1663,6 +2156,9 @@ export async function tryClaimCompactionRoom(
           rjs.compaction_lease_expires_at,
           rjs.compaction_retry_after,
           rjs.last_compaction_error_code,
+          rjs.last_compaction_error_at,
+          rjs.last_compaction_error_attempt,
+          rjs.last_compaction_error_model_id,
           rjs.compaction_failure_count,
           rjs.compaction_last_attempt_known_nonusable,
           rjs.rebuild_generation,
@@ -1678,15 +2174,16 @@ export async function tryClaimCompactionRoom(
     );
     const state = stateRows[0];
     if (!state || state.compaction_due_at === null) return null;
-    if (
-      (state.compaction_accepted_model_binding === null)
-        !== (state.compaction_accepted_plan === null)
-    ) {
+    if (state.last_compaction_error_code === "provider_outcome_unknown"
+      && (state.last_compaction_error_attempt === null
+        || state.last_compaction_error_attempt === undefined)) return null;
+    if (state.compaction_accepted_model_binding !== null
+      && state.compaction_accepted_plan === null) {
       throw new Error("Stenographer compaction acceptance is incoherent");
     }
-    if (state.last_compaction_error_code === "provider_outcome_unknown") {
-      return null;
-    }
+    const legacyMissingCompactionBinding =
+      state.compaction_accepted_model_binding === null
+      && state.compaction_accepted_plan !== null;
     if (
       state.kind === "task" ||
       state.kind === "access" ||
@@ -1727,29 +2224,47 @@ export async function tryClaimCompactionRoom(
     const acceptedPlan = acceptedOrdinaryCompactionPlan(
       state.compaction_accepted_plan,
     );
-    const eventById = new Map(allEvents.map((event) => [event.id, event]));
-    const frozenEvents = acceptedPlan === null
-      ? null
-      : [
-          ...acceptedPlan.selectedEventIds,
-          ...acceptedPlan.protectedTailEventIds,
-        ].map((id) => eventById.get(id));
-    if (
-      acceptedPlan !== null
-      && (
-        acceptedPlan.rebuildGeneration !== rebuildGeneration
-        || acceptedPlan.previousRollupId
-          !== (journal.latestRollup?.id ?? null)
-        || (frozenEvents?.some((event) => event === undefined) ?? true)
-      )
-    ) return null;
-    const planned = planJournalCompaction({
-      events: acceptedPlan === null
-        ? allEvents
-        : frozenEvents as EffectiveRoomEvent[],
-      rollups: journal.latestRollup ? [journal.latestRollup] : [],
-      ...(acceptedPlan === null ? {} : { forceDue: true }),
-    });
+    const currentAcceptedPlan = acceptedPlan === null ? null
+      : currentAcceptedOrdinaryCompactionPlan({
+          acceptedPlan,
+          rebuildGeneration,
+          latestRollup: journal.latestRollup,
+          allEvents,
+        });
+    const planned = currentAcceptedPlan ?? planJournalCompaction({
+          events: allEvents,
+          rollups: journal.latestRollup ? [journal.latestRollup] : [],
+        });
+    if (state.last_compaction_error_code === "provider_outcome_unknown"
+      && state.last_compaction_error_attempt != null && state.last_compaction_error_at !== null) {
+      const current = planned.ok ? planned.plan : null;
+      const workId = current && ordinaryCompactionOperationId(roomId, rebuildGeneration, journal.latestRollup?.id ?? null, current);
+      const digest = current && workId ? compactionInputDigest(workId, journal.latestRollup, current)
+        : createHash("sha256").update(JSON.stringify([roomId, rebuildGeneration, "no_compactable_input"])).digest("hex");
+      const grants = roomJournalModelRecoveries;
+      const [changed] = await tx.update(roomJournalModelRecoveries).set({ sourceChangedAt: now, replacementInputDigest: digest }).where(and(
+        eq(grants.roomId, roomId), eq(grants.workKind, "compaction"),
+        eq(grants.rebuildGeneration, rebuildGeneration),
+        eq(grants.observedAttempt, asNumber(state.last_compaction_error_attempt)),
+        eq(grants.observedFailureAt, asDate(state.last_compaction_error_at)),
+        isNull(grants.spentAt), isNull(grants.sourceChangedAt),
+        state.compaction_lease_token === null ? isNull(grants.claimLeaseToken)
+          : eq(grants.claimLeaseToken, state.compaction_lease_token),
+        // Only acceptance established for this legacy grant can be retired here.
+        acceptedPlan === null ? undefined : and(isNotNull(grants.authorizedInputDigest), eq(grants.workId, acceptedPlan.operationId)),
+        !workId || (acceptedPlan !== null && currentAcceptedPlan === null) ? undefined
+          : or(ne(grants.workId, workId), ne(grants.authorizedInputDigest, digest)),
+      )).returning({ id: grants.id });
+      if (changed) {
+        await tx.update(roomJournalState).set({
+          compactionAcceptedPlan: null, compactionAcceptedModelBinding: null,
+          compactionLeaseToken: null, compactionLeaseExpiresAt: null,
+          compactionRetryAfter: null, updatedAt: now,
+        }).where(eq(roomJournalState.roomId, roomId));
+        return null;
+      }
+    }
+    if (acceptedPlan !== null && currentAcceptedPlan === null) return null;
     if (!planned.ok) {
       const failureCount = asNumber(state.compaction_failure_count) + 1;
       await tx
@@ -1777,17 +2292,13 @@ export async function tryClaimCompactionRoom(
         .where(eq(roomJournalState.roomId, roomId));
       return null;
     }
-    if (
-      acceptedPlan !== null
-      && (
-        JSON.stringify(planned.plan.selectedEvents.map((event) => event.id))
-          !== JSON.stringify(acceptedPlan.selectedEventIds)
-        || JSON.stringify(planned.plan.protectedTail.map((event) => event.id))
-          !== JSON.stringify(acceptedPlan.protectedTailEventIds)
-      )
-    ) return null;
     const modelOperationId = acceptedPlan?.operationId
-      ?? `compaction:${roomId}:${rebuildGeneration}:${journal.latestRollup?.id ?? "initial"}:${planned.plan.throughEventSequence}:${planned.plan.protectedTail.at(-1)?.sequence ?? planned.plan.throughEventSequence}`;
+      ?? ordinaryCompactionOperationId(
+        roomId,
+        rebuildGeneration,
+        journal.latestRollup?.id ?? null,
+        planned.plan,
+      );
     const claimPlan = acceptedPlan ?? Object.freeze({
       version: 1 as const,
       owner: "ordinary" as const,
@@ -1801,6 +2312,80 @@ export async function tryClaimCompactionRoom(
         planned.plan.protectedTail.map((event) => event.id),
       ),
     });
+    const lastCompactionErrorAttempt = state.last_compaction_error_attempt === null
+      || state.last_compaction_error_attempt === undefined
+      ? null
+      : asNumber(state.last_compaction_error_attempt);
+    const [spentManualInvalidOutput] =
+      state.last_compaction_error_code === "invalid_output"
+      && state.last_compaction_error_at !== null
+      && state.last_compaction_error_model_id !== null
+      && lastCompactionErrorAttempt !== null
+      && lastCompactionErrorAttempt > 0
+        ? await tx.select({ id: roomJournalModelRecoveries.id })
+            .from(roomJournalModelRecoveries)
+            .where(and(
+              eq(roomJournalModelRecoveries.roomId, roomId),
+              eq(roomJournalModelRecoveries.workKind, "compaction"),
+              eq(roomJournalModelRecoveries.workId, modelOperationId),
+              eq(roomJournalModelRecoveries.rebuildGeneration, rebuildGeneration),
+              eq(roomJournalModelRecoveries.observedAttempt, lastCompactionErrorAttempt - 1),
+              eq(roomJournalModelRecoveries.targetModelId, state.last_compaction_error_model_id),
+              isNotNull(roomJournalModelRecoveries.claimLeaseToken),
+              isNotNull(roomJournalModelRecoveries.spentAt),
+              lte(roomJournalModelRecoveries.spentAt, asDate(state.last_compaction_error_at)),
+            ))
+            .limit(1)
+            .for("update", { of: roomJournalModelRecoveries })
+        : [];
+    const reclaimingUnspentRecovery =
+      lastCompactionErrorAttempt !== null
+      && state.compaction_lease_token !== null
+      && state.compaction_lease_expires_at !== null
+      && asDate(state.compaction_lease_expires_at).getTime() <= now.getTime();
+    const claimingFreshRecovery =
+      lastCompactionErrorAttempt !== null
+      && (
+        state.last_compaction_error_code === "provider_outcome_unknown"
+        || spentManualInvalidOutput !== undefined
+      );
+    const [manualRecovery] = !claimingFreshRecovery && !reclaimingUnspentRecovery
+      ? []
+      : await tx.select({
+          id: roomJournalModelRecoveries.id,
+          targetModelId: roomJournalModelRecoveries.targetModelId,
+          claimLeaseToken: roomJournalModelRecoveries.claimLeaseToken,
+          freshServiceInputs: roomJournalModelRecoveries.freshServiceInputs,
+          authorizedAt: roomJournalModelRecoveries.authorizedAt,
+        }).from(roomJournalModelRecoveries).where(and(
+          eq(roomJournalModelRecoveries.roomId, roomId),
+          eq(roomJournalModelRecoveries.workKind, "compaction"),
+          eq(roomJournalModelRecoveries.workId, modelOperationId),
+          eq(roomJournalModelRecoveries.rebuildGeneration, rebuildGeneration),
+          eq(roomJournalModelRecoveries.observedAttempt, lastCompactionErrorAttempt),
+          isNull(roomJournalModelRecoveries.spentAt),
+          isNull(roomJournalModelRecoveries.sourceChangedAt),
+          or(
+            eq(roomJournalModelRecoveries.freshServiceInputs, false),
+            isNotNull(roomJournalModelRecoveries.authorizedInputDigest),
+          ),
+          reclaimingUnspentRecovery
+            ? and(
+                eq(roomJournalModelRecoveries.claimLeaseToken, state.compaction_lease_token!),
+                isNotNull(roomJournalModelRecoveries.claimedAt),
+                lte(roomJournalModelRecoveries.claimedAt, now),
+              )
+            : and(
+                isNull(roomJournalModelRecoveries.claimLeaseToken),
+                isNull(roomJournalModelRecoveries.claimedAt),
+              ),
+        )).limit(1)
+          .for("update", { of: roomJournalModelRecoveries });
+    if (claimingFreshRecovery
+      && manualRecovery === undefined) return null;
+    if (legacyMissingCompactionBinding && manualRecovery === undefined) {
+      return null;
+    }
     const replaySafety = await resolveModelAttemptReplaySafety({
       kind: "operation", roomId, callType: "room_event_compaction", operationId: modelOperationId,
     }, {
@@ -1810,7 +2395,25 @@ export async function tryClaimCompactionRoom(
         && state.compaction_lease_token === null
         && acceptedPlan !== null,
     });
-    if (replaySafety.decision === "block_unknown") {
+    const freshReplaySafety = manualRecovery?.freshServiceInputs === true
+      ? await resolveFreshCompactionAttemptReplaySafety({
+          roomId,
+          operationId: modelOperationId,
+          occurredAtOrAfter: manualRecovery.authorizedAt,
+        }, tx)
+      : null;
+    if (freshReplaySafety?.decision === "block_unknown") {
+      if (!await retireFreshCompactionGrant(
+        tx,
+        roomId,
+        manualRecovery!.id,
+        now,
+      )) {
+        throw new Error("Fresh compaction recovery authorization changed");
+      }
+      return null;
+    }
+    if (replaySafety.decision === "block_unknown" && manualRecovery === undefined) {
       await tx.update(roomJournalState).set({
         compactionLeaseToken: null, compactionLeaseExpiresAt: null,
         compactionRetryAfter: null, lastCompactionErrorCode: "provider_outcome_unknown",
@@ -1819,6 +2422,52 @@ export async function tryClaimCompactionRoom(
       return null;
     }
     const leaseToken = randomUUID();
+    if (manualRecovery !== undefined) {
+      let binding: ReturnType<typeof parseMemoryOperationBinding> | null = null;
+      if (state.compaction_accepted_model_binding !== null) {
+        try {
+          binding = parseMemoryOperationBinding(
+            state.compaction_accepted_model_binding,
+          );
+        } catch {
+          throw new Error("Manual Stenographer compaction recovery binding changed");
+        }
+      }
+      if (binding !== null
+        && (binding.kind !== "service"
+          || binding.role !== "memorySummarization")) {
+        throw new Error("Manual Stenographer compaction recovery binding changed");
+      }
+      if (reclaimingUnspentRecovery
+        && binding !== null
+        && binding.modelId !== manualRecovery.targetModelId) {
+        throw new Error("Manual Stenographer compaction recovery binding changed");
+      }
+      await tx.update(roomJournalModelRecoveries).set({
+        claimLeaseToken: leaseToken,
+        claimedAt: now,
+      }).where(and(
+        eq(roomJournalModelRecoveries.id, manualRecovery.id),
+        isNull(roomJournalModelRecoveries.spentAt),
+        reclaimingUnspentRecovery
+          ? eq(
+              roomJournalModelRecoveries.claimLeaseToken,
+              manualRecovery.claimLeaseToken!,
+            )
+          : and(
+              isNull(roomJournalModelRecoveries.claimLeaseToken),
+              isNull(roomJournalModelRecoveries.claimedAt),
+            ),
+      ));
+      if (!reclaimingUnspentRecovery && binding !== null) {
+        await tx.update(roomJournalState).set({
+          compactionAcceptedModelBinding: {
+            ...binding,
+            modelId: manualRecovery.targetModelId,
+          },
+        }).where(eq(roomJournalState.roomId, roomId));
+      }
+    }
     await tx
       .update(roomJournalState)
       .set({
@@ -1838,6 +2487,10 @@ export async function tryClaimCompactionRoom(
       plan: planned.plan,
       namespaceId: state.namespace_id,
       previousRollup: journal.latestRollup,
+      ...(manualRecovery === undefined
+        ? {}
+        : { manualModelRecoveryId: manualRecovery.id, manualRecoveryModelId: manualRecovery.targetModelId }),
+      ...(manualRecovery?.freshServiceInputs ? { requiresCurrentServicePayer: true as const } : {}),
     };
   });
 }
@@ -1848,6 +2501,52 @@ export async function compactionCandidateRooms(
   const agentMember = db.select({ one: sql`1` }).from(roomMembers)
     .innerJoin(actors, eq(actors.id, roomMembers.actorId))
     .where(and(eq(roomMembers.roomId, rooms.id), eq(actors.kind, "agent")));
+  const manualRecovery = db.select({ one: sql`1` })
+    .from(roomJournalModelRecoveries)
+    .where(and(
+      eq(roomJournalModelRecoveries.roomId, roomJournalState.roomId),
+      eq(roomJournalModelRecoveries.workKind, "compaction"),
+      eq(roomJournalModelRecoveries.rebuildGeneration, roomJournalState.rebuildGeneration),
+      eq(roomJournalModelRecoveries.observedAttempt, roomJournalState.lastCompactionErrorAttempt),
+      isNull(roomJournalModelRecoveries.spentAt),
+      isNull(roomJournalModelRecoveries.sourceChangedAt),
+      or(
+        eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalState.compactionAcceptedPlan}->>'operationId'`),
+        and(
+          isNull(roomJournalState.compactionAcceptedPlan),
+          isNull(roomJournalState.compactionAcceptedModelBinding),
+          eq(roomJournalState.lastCompactionErrorCode, "provider_outcome_unknown"),
+          eq(roomJournalModelRecoveries.observedFailureAt, roomJournalState.lastCompactionErrorAt),
+          or(
+            and(
+              isNull(roomJournalModelRecoveries.claimLeaseToken),
+              isNull(roomJournalModelRecoveries.claimedAt),
+            ),
+            and(
+              isNotNull(roomJournalModelRecoveries.claimLeaseToken),
+              isNotNull(roomJournalModelRecoveries.claimedAt),
+              eq(roomJournalModelRecoveries.claimLeaseToken, roomJournalState.compactionLeaseToken),
+            ),
+          ),
+        ),
+      ),
+    ));
+  const spentManualInvalidOutput = db.select({ one: sql`1` })
+    .from(roomJournalModelRecoveries)
+    .where(and(
+      eq(roomJournalModelRecoveries.roomId, roomJournalState.roomId),
+      eq(roomJournalModelRecoveries.workKind, "compaction"),
+      eq(roomJournalModelRecoveries.rebuildGeneration, roomJournalState.rebuildGeneration),
+      eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalState.compactionAcceptedPlan}->>'operationId'`),
+      eq(roomJournalModelRecoveries.targetModelId, roomJournalState.lastCompactionErrorModelId),
+      eq(
+        roomJournalModelRecoveries.observedAttempt,
+        sql<number>`${roomJournalState.lastCompactionErrorAttempt} - 1`,
+      ),
+      isNotNull(roomJournalModelRecoveries.claimLeaseToken),
+      isNotNull(roomJournalModelRecoveries.spentAt),
+      lte(roomJournalModelRecoveries.spentAt, roomJournalState.lastCompactionErrorAt),
+    ));
   return db
     .select({ roomId: roomJournalState.roomId })
     .from(roomJournalState)
@@ -1861,7 +2560,14 @@ export async function compactionCandidateRooms(
         isNull(roomJournalState.rebuildRequestedAt),
         or(
           isNull(roomJournalState.lastCompactionErrorCode),
-          ne(roomJournalState.lastCompactionErrorCode, "provider_outcome_unknown"),
+          and(
+            ne(roomJournalState.lastCompactionErrorCode, "provider_outcome_unknown"),
+            or(
+              ne(roomJournalState.lastCompactionErrorCode, "invalid_output"),
+              notExists(spentManualInvalidOutput),
+            ),
+          ),
+          exists(manualRecovery),
         ),
         or(
           isNull(roomJournalState.compactionRetryAfter),
@@ -2256,6 +2962,21 @@ export async function failCompaction(input: {
     if (!rows[0]) return;
     const current = rows[0];
     const failureCount = asNumber(current.compaction_failure_count) + 1;
+    if (input.errorCode === "input_authority_unavailable" && input.claim.requiresCurrentServicePayer
+      && input.claim.manualModelRecoveryId
+      && await retireFreshCompactionGrant(tx, input.claim.roomId, input.claim.manualModelRecoveryId, now)) return;
+    const parkedToken = await parkUnspentJournalGrant(tx, input.claim, "compaction", input.claim.modelOperationId);
+    if (parkedToken !== null) {
+      // Preserve the failure coordinates that authorize this exact compaction.
+      // No new provider attempt happened. The first worker after backoff can
+      // resume the same reservation even if the server model has changed.
+      const retryAt = new Date(now.getTime() + retryDelayMs(failureCount));
+      await tx.update(roomJournalState).set({
+        compactionLeaseToken: parkedToken, compactionLeaseExpiresAt: retryAt,
+        compactionRetryAfter: retryAt, updatedAt: now,
+      }).where(eq(roomJournalState.roomId, input.claim.roomId));
+      return;
+    }
     await tx
       .update(roomJournalState)
       .set({

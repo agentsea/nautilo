@@ -126,6 +126,83 @@ describe("Stenographer failure transitions", () => {
     expect(state.updates[1]?.values["extractionRetryAfter"]).toBeNull();
   });
 
+  test("backs off unavailable input authority before an exact extraction recheck", async () => {
+    const state = failureDb({ extraction_failure_count: 0 });
+
+    await failExtraction({
+      claim: {
+        batchId: BATCH_ID,
+        roomId: ROOM_ID,
+        leaseToken: LEASE_TOKEN,
+      } as never,
+      errorCode: "input_authority_unavailable",
+      modelId: "openrouter:test-model",
+      now: NOW,
+      db: state.db as never,
+    });
+
+    expect(state.updates[0]?.values["errorCode"])
+      .toBe("input_authority_unavailable");
+    expect(state.updates[1]?.values["lastExtractionErrorCode"])
+      .toBe("input_authority_unavailable");
+    expect(state.updates[1]?.values["extractionRetryAfter"]).toEqual(
+      new Date("2026-08-17T12:00:15.000Z"),
+    );
+  });
+
+  test("preserves an exact invalid-output proof across a pre-wire authority deferral", async () => {
+    const state = failureDb({ extraction_failure_count: 1 });
+
+    await failExtraction({
+      claim: {
+        batchId: BATCH_ID,
+        roomId: ROOM_ID,
+        leaseToken: LEASE_TOKEN,
+        previousModelResultKnownNonusable: true,
+      },
+      errorCode: "input_authority_unavailable",
+      modelId: "model-that-was-not-called",
+      now: NOW,
+      db: state.db as never,
+    });
+
+    expect(state.updates[0]?.values).toEqual({
+      status: "failed",
+      errorCode: "invalid_output",
+    });
+    expect(state.updates[1]?.values).toMatchObject({
+      extractionFailureCount: 2,
+      extractionRetryAfter: new Date("2026-08-17T12:00:30.000Z"),
+      lastExtractionErrorCode: "input_authority_unavailable",
+      lastExtractionErrorAt: NOW,
+    });
+  });
+
+  test("replaces prior invalid-output proof after any real retry failure", async () => {
+    const state = failureDb({ extraction_failure_count: 1 });
+
+    await failExtraction({
+      claim: {
+        batchId: BATCH_ID,
+        roomId: ROOM_ID,
+        leaseToken: LEASE_TOKEN,
+        previousModelResultKnownNonusable: true,
+      },
+      errorCode: "provider",
+      modelId: "retried-model",
+      now: NOW,
+      db: state.db as never,
+    });
+
+    expect(state.updates[0]?.values).toMatchObject({
+      status: "failed",
+      errorCode: "provider",
+      modelId: "retried-model",
+      lastErrorAt: NOW,
+      lastErrorModelId: "retried-model",
+    });
+  });
+
   test("persists uncertain provider outcomes without scheduling compaction replay", async () => {
     const state = failureDb({ compaction_failure_count: 0 });
 

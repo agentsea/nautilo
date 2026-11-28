@@ -5,20 +5,30 @@ import {
   and,
   asc,
   eq,
+  exists,
   gt,
   inArray,
+  isNotNull,
   isNull,
+  lte,
   ne,
+  notExists,
   or,
   reflectionRecordDependencies,
   reflectionRecordAuthorityDependencies,
+  reflectionRecordAuthorityReconciliations,
   reflectionRecordDependencyChangeRepairs,
+  reflectionRecordPayloadRepresentationHeads,
+  reflectionRecordPublications,
   reflectionRecordSemanticWork,
   reflectionRecordSemanticWorkAdmissions,
   reflectionRecordSearchProjections,
   reflectionRecordSourceChangeRepairs,
   reflectionRecordSourceDependencyIndex,
   reflectionRecords,
+  reflectionManualRecoveryBindingKeySql,
+  reflectionManualRecoveryFamilyKeySql,
+  reflectionRecordSuccessors,
   sql,
 } from "@nautilo/db";
 import type {
@@ -36,6 +46,7 @@ import {
   DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1,
   DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION,
   DURABLE_SLEEP_WORK_INTENT_POLICY_V1,
+  DurableSleepOrganizationUnavailableError,
 } from "@nautilo/reflection";
 import type {
   DurableRecordPublication,
@@ -95,6 +106,13 @@ type SemanticChangeReason = DurableSleepClaim["changeReason"];
 export interface RecordSemanticCommitmentPort {
   modelBinding(input: Readonly<{
     binding: MemoryOperationBinding;
+  }>): Uint8Array;
+  manualRecovery(input: Readonly<{
+    recordRef: string;
+    sourceGeneration: number;
+    recoveryId: string;
+    authorizedBy: string;
+    observedThrough: Date;
   }>): Uint8Array;
   sourceDependency(input: Pick<
     DurableSourceDependency,
@@ -194,6 +212,28 @@ export function createHmacRecordSemanticCommitmentPort(
         ownedKey,
         "nautilo/reflection/model-batch-family/v1",
         [JSON.stringify(binding)],
+      );
+    },
+    manualRecovery(input) {
+      assertOpaque(input.recordRef, "manual recovery Record reference");
+      assertOpaque(input.recoveryId, "manual recovery identity");
+      assertOpaque(input.authorizedBy, "manual recovery authorizer");
+      if (!Number.isSafeInteger(input.sourceGeneration) || input.sourceGeneration < 1) {
+        throw new RangeError("manual recovery source generation must be positive");
+      }
+      if (!Number.isFinite(input.observedThrough.getTime())) {
+        throw new TypeError("manual recovery observation cutoff must be valid");
+      }
+      return semanticHmac(
+        ownedKey,
+        "nautilo/reflection/manual-provider-recovery/v1",
+        [
+          input.recordRef,
+          String(input.sourceGeneration),
+          input.recoveryId,
+          input.authorizedBy,
+          input.observedThrough.toISOString(),
+        ],
       );
     },
     sourceDependency(input: Pick<
@@ -521,8 +561,7 @@ function parentConflictCapacityExceeded(): DurableParentConflictResolutionResult
   };
 }
 
-function rowDate(row: RecordProductPostgresRow, key: string): Date | null {
-  const value = row[key];
+function semanticWorkDate(value: unknown): Date | null {
   if (value === null) return null;
   if (value instanceof Date && Number.isFinite(value.getTime())) return value;
   const parts = typeof value === "string"
@@ -541,19 +580,51 @@ function rowDate(row: RecordProductPostgresRow, key: string): Date | null {
   throw new TypeError("Invalid semantic work timestamp");
 }
 
+function rowDate(row: RecordProductPostgresRow, key: string): Date | null {
+  return semanticWorkDate(row[key]);
+}
+
+async function lockSemanticWorkAdmission(
+  tx: RecordProductPostgresExecutor,
+  recordRef: string,
+): Promise<void> {
+  await tx.query(
+    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+    [`reflection-semantic-work:${recordRef}`],
+  );
+}
+
+async function tryLockSemanticWorkAdmission(
+  tx: RecordProductPostgresExecutor,
+  recordRef: string,
+): Promise<boolean> {
+  const rows = await executeTypedRecordProductQuery(tx,
+    recordProductTypedDb.select({
+      locked: sql<boolean>`pg_try_advisory_xact_lock(hashtextextended(${
+        `reflection-semantic-work:${recordRef}`
+      }, 0))`.as("locked"),
+    }).from(reflectionRecords)
+      .where(eq(reflectionRecords.recordId, recordRef))
+      .limit(1));
+  return rows[0]?.locked === true;
+}
+
+type SemanticWorkAdmissionInput = Readonly<{
+  recordRef: string;
+  changeReason: SemanticChangeReason;
+  admissionCommitment: Uint8Array;
+  now: Date;
+  notBefore?: Date;
+}>;
+
 /**
  * Exact, transaction-neutral admission primitive. The immutable receipt makes
  * replays no-ops even after later first-seen changes advanced the work row.
  */
-export async function admitSemanticWorkWithinTransaction(
+async function admitSerializedSemanticWorkWithinTransaction(
   tx: RecordProductPostgresExecutor,
-  input: Readonly<{
-    recordRef: string;
-    changeReason: SemanticChangeReason;
-    admissionCommitment: Uint8Array;
-    now: Date;
-    notBefore?: Date;
-  }>,
+  input: SemanticWorkAdmissionInput,
+  existingWorkRowLocked: boolean,
 ): Promise<Readonly<{ admitted: boolean; generation: number }>> {
   assertOpaque(input.recordRef, "Record reference");
   assertReason(input.changeReason);
@@ -568,10 +639,9 @@ export async function admitSemanticWorkWithinTransaction(
   ) {
     throw new RangeError("semantic work timestamps must be valid and not-before cannot precede admission");
   }
-  await tx.query(
-    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-    [`reflection-semantic-work:${input.recordRef}`],
-  );
+  if (!existingWorkRowLocked) {
+    await lockSemanticWorkAdmission(tx, input.recordRef);
+  }
   const receipt = await executeTypedRecordProductQuery(tx,
     recordProductTypedDb.select({
       assigned_generation: reflectionRecordSemanticWorkAdmissions.assignedGeneration,
@@ -664,6 +734,15 @@ export async function admitSemanticWorkWithinTransaction(
         ordinaryFallbackReason: null,
         acceptedModelBinding: null,
         acceptedModelBindingGeneration: null,
+        manualRecoveryId: null,
+        manualRecoverySourceGeneration: null,
+        manualRecoveryAuthorizedBy: null,
+        manualRecoveryAuthorizedAt: null,
+        manualRecoveryObservedThrough: null,
+        manualRecoveryServiceModelId: null,
+        manualRecoverySpentAt: null,
+        organizerProposalCheckpoint: null,
+        organizerProposalResumedAt: null,
         dueSince: sql`greatest(${reflectionRecordSemanticWork.dueSince}, ${input.now})`,
         startedAt: null,
         completedAt: null,
@@ -672,6 +751,13 @@ export async function admitSemanticWorkWithinTransaction(
       .where(eq(reflectionRecordSemanticWork.recordId, input.recordRef)));
   }
   return { admitted: true, generation };
+}
+
+export function admitSemanticWorkWithinTransaction(
+  tx: RecordProductPostgresExecutor,
+  input: SemanticWorkAdmissionInput,
+): Promise<Readonly<{ admitted: boolean; generation: number }>> {
+  return admitSerializedSemanticWorkWithinTransaction(tx, input, false);
 }
 
 /** Install exact protected-mode reverse lookup without persisting source IDs. */
@@ -738,6 +824,99 @@ export interface SemanticSourceRepairDrainResult {
   readonly pending: boolean;
 }
 
+type ManualRecoveryServiceBinding =
+  | Extract<MemoryOperationBinding, { kind: "service" }>
+  | Readonly<{ kind: "service"; modelId: string }>;
+
+function manualRecoveryServiceBinding(value: unknown): ManualRecoveryServiceBinding | null {
+  try {
+    const binding = parseMemoryOperationBinding(value);
+    return binding.kind === "service" && binding.role === "memoryReflection"
+      ? binding
+      : null;
+  } catch {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const row = value as Record<string, unknown>;
+    return row["kind"] === "service"
+      && typeof row["modelId"] === "string"
+      && row["modelId"].trim() === row["modelId"]
+      && row["modelId"].length > 0
+      && Object.keys(row).length === 2
+      ? { kind: "service", modelId: row["modelId"] }
+      : null;
+  }
+}
+
+export function reflectionManualRecoveryFamilyKey(input: Readonly<{
+  recordRef: string;
+  binding: unknown;
+}>): string | null {
+  const binding = manualRecoveryServiceBinding(input.binding);
+  if (binding === null) return null;
+  return "version" in binding
+    ? `operation:${JSON.stringify(binding)}`
+    : `legacy-record:${input.recordRef}`;
+}
+
+function manualRecoveryLockFamilyKeys(input: Readonly<{
+  recordRef: string;
+  binding: unknown;
+  recoveryId: unknown;
+}>): readonly string[] {
+  const keys: string[] = [];
+  if (typeof input.recoveryId === "string") {
+    keys.push(`recovery:${input.recoveryId}`);
+  }
+  const operation = reflectionManualRecoveryFamilyKey(input);
+  if (operation !== null) keys.push(`binding:${operation}`);
+  return keys.sort((left, right) => left.localeCompare(right));
+}
+
+export function manualRecoveryConnectedFamilyRoots(rows: readonly Readonly<{
+  record_id: string;
+  accepted_model_binding: unknown;
+  manual_recovery_id: unknown;
+}>[]): ReadonlyMap<string, string> {
+  const parent = new Map<string, string>(rows.map(row =>
+    [row.record_id, row.record_id] as const));
+  const size = new Map<string, number>([...parent.keys()].map(recordId =>
+    [recordId, 1] as const));
+  const find = (recordId: string): string => {
+    let root = recordId;
+    while (parent.get(root)! !== root) root = parent.get(root)!;
+    let current = recordId;
+    while (current !== root) {
+      const prior = parent.get(current)!;
+      parent.set(current, root);
+      current = prior;
+    }
+    return root;
+  };
+  const unite = (left: string, right: string) => {
+    let leftRoot = find(left);
+    let rightRoot = find(right);
+    if (leftRoot === rightRoot) return;
+    if (size.get(leftRoot)! < size.get(rightRoot)!) {
+      [leftRoot, rightRoot] = [rightRoot, leftRoot];
+    }
+    parent.set(rightRoot, leftRoot);
+    size.set(leftRoot, size.get(leftRoot)! + size.get(rightRoot)!);
+  };
+  const keyOwner = new Map<string, string>();
+  for (const row of rows) {
+    for (const key of manualRecoveryLockFamilyKeys({
+      recordRef: row.record_id,
+      binding: row.accepted_model_binding,
+      recoveryId: row.manual_recovery_id,
+    })) {
+      const owner = keyOwner.get(key);
+      if (owner === undefined) keyOwner.set(key, row.record_id);
+      else unite(row.record_id, owner);
+    }
+  }
+  return new Map([...parent.keys()].map(recordId => [recordId, find(recordId)]));
+}
+
 export class PostgresSemanticWorkStore
   implements DurableSleepWorkPort, RecordSemanticPublicationPort {
   readonly #clock: () => Date;
@@ -763,6 +942,490 @@ export class PostgresSemanticWorkStore
     if (!Number.isSafeInteger(this.#retryMilliseconds) || this.#retryMilliseconds < 1) {
       throw new RangeError("semantic work retry must be a positive integer of milliseconds");
     }
+  }
+
+  /**
+   * Admit one fresh, operator-authorized generation for each currently held
+   * service-funded Reflection subject observed by the caller. The next worker
+   * claim still reopens canonical source authority and derives a new keyed
+   * input commitment before provider dispatch. Human-funded work is excluded:
+   * server-operations authority cannot spend a Human's provider account.
+   */
+  requestManualProviderRecovery(input: Readonly<{
+    now: Date;
+    observedThrough: Date;
+    authorizedBy: string;
+    authorizedAt?: Date;
+    modelId: string;
+    page?: Readonly<{ after: string | null; limit: number }>;
+    provenRefusedRecordRefs?: readonly string[];
+    onlyProvenRefusals?: boolean;
+  }>): Promise<Readonly<{
+    queued: number;
+    held: number;
+    scanned?: number;
+    nextCursor?: string;
+  }>> {
+    const nowMs = input.now.getTime();
+    const observedThroughMs = input.observedThrough.getTime();
+    const authorizedAt = input.authorizedAt ?? input.now;
+    const authorizedAtMs = authorizedAt.getTime();
+    if (!Number.isFinite(nowMs) || !Number.isFinite(observedThroughMs)
+      || !Number.isFinite(authorizedAtMs)
+      || observedThroughMs >= nowMs
+      || authorizedAtMs < observedThroughMs
+      || authorizedAtMs > nowMs) {
+      throw new RangeError("Reflection recovery timestamps are invalid");
+    }
+    assertOpaque(input.authorizedBy, "Reflection recovery authorizer");
+    if (!input.modelId || input.modelId.trim() !== input.modelId) {
+      throw new TypeError("Reflection recovery model must be non-empty and trimmed");
+    }
+    const provenRefusedRecordRefs = [...new Set(input.provenRefusedRecordRefs ?? [])];
+    if (provenRefusedRecordRefs.some(recordRef => recordRef.length === 0)
+      || (input.onlyProvenRefusals === true && provenRefusedRecordRefs.length === 0)) {
+      throw new TypeError("Reflection proven-refusal family is invalid");
+    }
+    if (input.page !== undefined && (
+      !Number.isSafeInteger(input.page.limit)
+      || input.page.limit < 1
+      || (input.page.after !== null
+        && !/^(?:binding:[0-9a-f]{64}|recovery:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|record:[0-9a-f]{32})$/
+          .test(input.page.after))
+    )) {
+      throw new RangeError("Reflection provider recovery page is invalid");
+    }
+    return this.options.handle.transaction(async tx => {
+      const work = reflectionRecordSemanticWork;
+      const familyKey = reflectionManualRecoveryFamilyKeySql(work);
+      const bindingKey = reflectionManualRecoveryBindingKeySql(
+        work.acceptedModelBinding,
+      );
+      const ordinaryEligibility = or(
+        and(
+          eq(work.state, "complete"),
+          eq(work.completionOutcome, "provider_outcome_unknown"),
+        ),
+        eq(work.state, "quarantined"),
+      );
+      const provenRefusalEligibility = provenRefusedRecordRefs.length === 0
+        ? undefined
+        : and(
+            sql`${work.recordId}
+              = ANY(${sql.param(provenRefusedRecordRefs)}::text[])`,
+            eq(work.state, "checkpointed"),
+            eq(work.stage, "organization"),
+            eq(work.waitingReason, "provider"),
+            isNull(work.leaseToken),
+            isNotNull(work.manualRecoveryId),
+            isNotNull(work.manualRecoverySpentAt),
+          );
+      const eligibility = and(
+        lte(work.updatedAt, input.observedThrough),
+        input.onlyProvenRefusals === true
+          ? provenRefusalEligibility
+          : or(ordinaryEligibility, provenRefusalEligibility),
+      );
+      const selectedFamilyKeys = input.page === undefined
+        ? undefined
+        : (await executeTypedRecordProductQuery(tx,
+            recordProductTypedDb.selectDistinct({
+              family_key: familyKey.as("family_key"),
+            }).from(work)
+              .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+              .where(and(
+                eligibility,
+                input.page.after === null
+                  ? undefined
+                  : gt(familyKey, input.page.after),
+              ))
+              .orderBy(asc(familyKey))
+              .limit(input.page.limit)))
+          .map(row => row.family_key);
+      if (selectedFamilyKeys?.length === 0) {
+        return { queued: 0, held: 0, scanned: 0 };
+      }
+      const candidateSelection = {
+          record_id: work.recordId,
+          accepted_model_binding: work.acceptedModelBinding,
+          manual_recovery_id: work.manualRecoveryId,
+          family_key: familyKey.as("family_key"),
+          binding_key: bindingKey.as("binding_key"),
+          eligible: sql<boolean>`${eligibility}`.as("eligible"),
+        };
+      const pageCursorKey = selectedFamilyKeys?.at(-1);
+      const seedRows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select(candidateSelection).from(work)
+          .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+          .where(selectedFamilyKeys === undefined
+            ? eligibility
+            : inArray(familyKey, selectedFamilyKeys))
+          .orderBy(asc(familyKey), asc(work.recordId)));
+      const candidates = await (async () => {
+            const byRecord = new Map<string, Readonly<{
+              record_id: string;
+              accepted_model_binding: unknown;
+              manual_recovery_id: string | null;
+              family_key: string;
+              binding_key: string | null;
+              eligible: boolean;
+            }>>(seedRows.map(row => [row.record_id, row]));
+            const recoveryIds = new Set<string>();
+            const bindingKeys = new Set<string>();
+            for (const row of seedRows) {
+              if (typeof row.manual_recovery_id === "string") {
+                recoveryIds.add(row.manual_recovery_id);
+              }
+              if (typeof row.binding_key === "string") bindingKeys.add(row.binding_key);
+            }
+            let changed = true;
+            while (changed && (recoveryIds.size > 0 || bindingKeys.size > 0)) {
+              changed = false;
+              const rows = await executeTypedRecordProductQuery(tx,
+                recordProductTypedDb.select(candidateSelection).from(work)
+                  .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+                  .where(or(
+                    recoveryIds.size === 0
+                      ? undefined
+                      : sql`${work.manualRecoveryId}
+                          = ANY(${sql.param([...recoveryIds])}::uuid[])`,
+                    bindingKeys.size === 0
+                      ? undefined
+                      : sql`${bindingKey}
+                          = ANY(${sql.param([...bindingKeys])}::text[])`,
+                  ))
+                  .orderBy(asc(familyKey), asc(work.recordId)));
+              for (const row of rows) {
+                if (!byRecord.has(row.record_id)) {
+                  byRecord.set(row.record_id, row);
+                  changed = true;
+                }
+                if (typeof row.manual_recovery_id === "string"
+                  && !recoveryIds.has(row.manual_recovery_id)) {
+                  recoveryIds.add(row.manual_recovery_id);
+                  changed = true;
+                }
+                if (typeof row.binding_key === "string" && !bindingKeys.has(row.binding_key)) {
+                  bindingKeys.add(row.binding_key);
+                  changed = true;
+                }
+              }
+            }
+            const expanded = [...byRecord.values()].sort((left, right) =>
+              left.family_key.localeCompare(right.family_key)
+                || left.record_id.localeCompare(right.record_id));
+            const roots = manualRecoveryConnectedFamilyRoots(expanded);
+            const components = new Map<string, { selected: boolean; maximumKey: string }>();
+            for (const row of expanded) {
+              const root = roots.get(row.record_id)!;
+              const component = components.get(root) ?? {
+                selected: selectedFamilyKeys === undefined,
+                maximumKey: row.eligible ? row.family_key : "",
+              };
+              component.selected ||= selectedFamilyKeys?.includes(row.family_key) ?? false;
+              if (row.eligible && row.family_key > component.maximumKey) {
+                component.maximumKey = row.family_key;
+              }
+              components.set(root, component);
+            }
+            return expanded.filter(row => {
+              const component = components.get(roots.get(row.record_id)!)!;
+              return component.selected
+                && (pageCursorKey === undefined || component.maximumKey <= pageCursorKey);
+            });
+          })();
+      const pageResult = (result: Readonly<{ queued: number; held: number }>) => {
+        if (input.page === undefined || selectedFamilyKeys === undefined) return result;
+        const nextCursor = selectedFamilyKeys.length === input.page.limit
+          ? pageCursorKey
+          : undefined;
+        return {
+          ...result,
+          scanned: selectedFamilyKeys.length,
+          ...(nextCursor === undefined ? {} : { nextCursor }),
+        };
+      };
+      if (candidates.length === 0) return pageResult({ queued: 0, held: 0 });
+
+      // Legacy direct callers retain their non-blocking partial assessment.
+      // Durable pages instead fail the entire savepoint immediately when any
+      // family member is locked. The coordinator recognizes 55P03, preserves
+      // its seed cursor and rotates lanes before retrying, so a page can never
+      // advance past a partially locked paid family.
+      const candidateRecordRefs = candidates.map(row => row.record_id);
+      const lockQuery = recordProductTypedDb.select({
+        record_id: work.recordId,
+        generation: work.generation,
+        completed_generation: work.completedGeneration,
+        change_reason: work.changeReason,
+        stage: work.stage,
+        accepted_model_binding: work.acceptedModelBinding,
+        accepted_model_binding_generation: work.acceptedModelBindingGeneration,
+        organizer_proposal_checkpoint: work.organizerProposalCheckpoint,
+        manual_recovery_id: work.manualRecoveryId,
+        manual_recovery_source_generation: work.manualRecoverySourceGeneration,
+        manual_recovery_service_model_id: work.manualRecoveryServiceModelId,
+        manual_recovery_spent_at: work.manualRecoverySpentAt,
+        family_key: familyKey.as("family_key"),
+        updated_at: work.updatedAt,
+        state: work.state,
+        waiting_reason: work.waitingReason,
+        lease_token: work.leaseToken,
+        completion_outcome: work.completionOutcome,
+        failure_code: work.failureCode,
+        failure_detail: work.failureDetail,
+        lifecycle: reflectionRecords.lifecycle,
+        disposition: reflectionRecords.disposition,
+      }).from(work)
+        .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+        .where(sql`${work.recordId} = ANY(${sql.param(candidateRecordRefs)}::text[])`)
+        .orderBy(asc(familyKey), asc(work.recordId));
+      const locked = await executeTypedRecordProductQuery(
+        tx,
+        input.page === undefined
+          ? lockQuery.for("update", { of: work, skipLocked: true })
+          : lockQuery.for("update", { of: work, noWait: true }),
+      );
+      if (locked.length === 0) {
+        return pageResult({ queued: 0, held: candidates.length });
+      }
+
+      // A paid operation can span multiple Records. If row contention skipped
+      // any candidate member, leave every member of that observed family held
+      // so a later request cannot split one shared provider result into
+      // independently billable recovery generations.
+      const candidateByRecord = new Map(candidates.map(row => [row.record_id, row]));
+      const lockedRecordRefs = new Set(locked.map(row => row.record_id));
+      const connectedRoots = manualRecoveryConnectedFamilyRoots([...candidates, ...locked]);
+      const incompleteRoots = new Set<string>();
+      for (const row of candidates) {
+        if (!lockedRecordRefs.has(row.record_id)) {
+          incompleteRoots.add(connectedRoots.get(row.record_id)!);
+        }
+      }
+      for (const row of locked) {
+        const candidate = candidateByRecord.get(row.record_id);
+        const candidateFamilyKeys = candidate === undefined
+          ? []
+          : manualRecoveryLockFamilyKeys({
+              recordRef: candidate.record_id,
+              binding: candidate.accepted_model_binding,
+              recoveryId: candidate.manual_recovery_id,
+            });
+        const lockedFamilyKeys = manualRecoveryLockFamilyKeys({
+          recordRef: row.record_id,
+          binding: row.accepted_model_binding,
+          recoveryId: row.manual_recovery_id,
+        });
+        if (candidate?.family_key !== row.family_key
+          || JSON.stringify(candidateFamilyKeys) !== JSON.stringify(lockedFamilyKeys)) {
+          incompleteRoots.add(connectedRoots.get(row.record_id)!);
+        }
+      }
+      const held = locked.filter(row => {
+        return !incompleteRoots.has(connectedRoots.get(row.record_id)!);
+      });
+      if (held.length === 0) {
+        return pageResult({ queued: 0, held: candidates.length });
+      }
+
+      const recordRefs = held.map(row => row.record_id);
+      const unsafePublications = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({ record_id: reflectionRecordPublications.recordId })
+          .from(reflectionRecordPublications)
+          .where(and(
+            sql`${reflectionRecordPublications.recordId}
+              = ANY(${sql.param(recordRefs)}::text[])`,
+            ne(reflectionRecordPublications.state, "complete"),
+          )));
+      const unsafeAuthority = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({ record_id: reflectionRecordAuthorityReconciliations.recordId })
+          .from(reflectionRecordAuthorityReconciliations)
+          .where(and(
+            sql`${reflectionRecordAuthorityReconciliations.recordId}
+              = ANY(${sql.param(recordRefs)}::text[])`,
+            ne(reflectionRecordAuthorityReconciliations.state, "complete"),
+          )));
+      const unsafeRecords = new Set([
+        ...unsafePublications.map(row => row.record_id),
+        ...unsafeAuthority.map(row => row.record_id),
+      ]);
+
+      const heldFamilies = new Map<string, Array<(typeof held)[number]>>();
+      for (const row of held) {
+        const root = connectedRoots.get(row.record_id)!;
+        const family = heldFamilies.get(root) ?? [];
+        family.push(row);
+        heldFamilies.set(root, family);
+      }
+
+      const safelyObserved = (row: (typeof held)[number]) =>
+        semanticWorkDate(row.updated_at)! <= input.observedThrough;
+      const retryableQuarantine = (row: (typeof held)[number]) => {
+        const recordRef = row.record_id;
+        const generation = row.generation;
+        if (row.state !== "quarantined" || !safelyObserved(row)) return false;
+        // The original operator grant is still available if the failure
+        // happened before the worker even bound a model. Keep its identity,
+        // generation, model and single-spend fence when making it due again.
+        const unspentAdmission = row.failure_code === "unexpected_failure"
+          && row.failure_detail === "unexpected_model_invocation_failure"
+          && row.manual_recovery_id != null
+          && row.manual_recovery_source_generation === generation - 1
+          && row.manual_recovery_service_model_id === input.modelId
+          && row.manual_recovery_spent_at === null
+          && row.accepted_model_binding === null
+          && row.organizer_proposal_checkpoint === null;
+        return row.lifecycle === "current"
+          && row.disposition === "available"
+          && !unsafeRecords.has(recordRef)
+          // Authority can become available without changing the saved paid
+          // result. A diagnosed candidate-selection cycle is canonical,
+          // deterministic evidence and cannot be repaired by reclaiming the
+          // same generation, so it remains held.
+          && (
+            unspentAdmission || row.failure_code === "authority_unavailable"
+            || (
+              row.failure_code === "publication_unavailable"
+              && [
+                "publication_plan_stale",
+                "publication_source_unavailable",
+              ].includes(String(row.failure_detail))
+              && row.organizer_proposal_checkpoint !== null
+            )
+          );
+      };
+      const safeFreshCalculation = (row: (typeof held)[number]) => {
+        const recordRef = row.record_id;
+        const generation = row.generation;
+        const familyKey = reflectionManualRecoveryFamilyKey({
+          recordRef,
+          binding: row.accepted_model_binding,
+        });
+        const safeTerminalHold = row.state === "complete"
+          && row.completion_outcome === "provider_outcome_unknown"
+          && row.completed_generation === generation;
+        const safeFreshCalculationHold = row.state === "quarantined"
+          && row.failure_code === "publication_unavailable"
+          && row.failure_detail === "publication_plan_stale"
+          && row.organizer_proposal_checkpoint === null;
+        const refusedBinding = manualRecoveryServiceBinding(row.accepted_model_binding);
+        const safeProvenRefusal = provenRefusedRecordRefs.includes(recordRef)
+          && row.state === "checkpointed"
+          && row.waiting_reason === "provider"
+          && row.lease_token === null
+          && typeof row.manual_recovery_id === "string"
+          && row.manual_recovery_source_generation === generation - 1
+          && row.manual_recovery_spent_at !== null
+          && refusedBinding !== null
+          && refusedBinding.modelId === row.manual_recovery_service_model_id;
+        return safelyObserved(row)
+          && familyKey !== null
+          && row.lifecycle === "current"
+          && row.disposition === "available"
+          && row.stage === "organization"
+          && (safeTerminalHold || safeFreshCalculationHold || safeProvenRefusal)
+          && row.accepted_model_binding_generation === generation
+          && !unsafeRecords.has(recordRef);
+      };
+
+      let queued = 0;
+      for (const family of heldFamilies.values()) {
+        if (family.every(retryableQuarantine)) {
+          const conditionalFamilyKeys = new Set(family.map(row =>
+            reflectionManualRecoveryFamilyKey({
+              recordRef: row.record_id,
+              binding: row.accepted_model_binding,
+            })));
+          const conditionalRecoveryId = family.every(row =>
+            row.failure_code === "publication_unavailable"
+            && row.failure_detail === "publication_plan_stale")
+            && conditionalFamilyKeys.size === 1
+            && !conditionalFamilyKeys.has(null)
+            ? randomUUID()
+            : null;
+          for (const row of family) {
+            const retried = await executeTypedRecordProductQuery(tx,
+              recordProductTypedDb.update(work).set({
+                recoverAfter: input.now,
+                ...(conditionalRecoveryId === null
+                  ? {}
+                  : {
+                      manualRecoveryId: conditionalRecoveryId,
+                      manualRecoverySourceGeneration: row.generation,
+                      manualRecoveryAuthorizedBy: input.authorizedBy,
+                      manualRecoveryAuthorizedAt: authorizedAt,
+                      manualRecoveryObservedThrough: input.observedThrough,
+                      manualRecoveryServiceModelId: input.modelId,
+                      manualRecoverySpentAt: null,
+                    }),
+                updatedAt: input.now,
+              }).where(and(
+                eq(work.recordId, row.record_id),
+                eq(work.generation, row.generation),
+                eq(work.state, "quarantined"),
+                lte(work.updatedAt, input.observedThrough),
+                eq(work.failureCode, row.failure_code!),
+                row.failure_detail === null
+                  ? isNull(work.failureDetail)
+                  : eq(work.failureDetail, row.failure_detail),
+              )).returning({ record_id: work.recordId }));
+            if (retried.length === 1) queued += 1;
+          }
+          continue;
+        }
+        const freshFamilyKeys = new Set(family.map(row =>
+          reflectionManualRecoveryFamilyKey({
+            recordRef: row.record_id,
+            binding: row.accepted_model_binding,
+          })));
+        if (!family.every(safeFreshCalculation)
+          || freshFamilyKeys.size !== 1
+          || freshFamilyKeys.has(null)) continue;
+        const recoveryId = randomUUID();
+        for (const row of family) {
+          const recordRef = row.record_id;
+          const sourceGeneration = row.generation;
+          const changeReason = row.change_reason;
+          assertReason(changeReason);
+          const admitted = await admitSerializedSemanticWorkWithinTransaction(tx, {
+            recordRef,
+            changeReason,
+            admissionCommitment: this.options.commitments.manualRecovery({
+              recordRef,
+              sourceGeneration,
+              recoveryId,
+              authorizedBy: input.authorizedBy,
+              observedThrough: input.observedThrough,
+            }),
+            now: input.now,
+          }, true);
+          if (!admitted.admitted || admitted.generation !== sourceGeneration + 1) {
+            throw new Error("Reflection manual recovery admission lost its generation fence");
+          }
+          const marked = await executeTypedRecordProductQuery(tx,
+            recordProductTypedDb.update(work).set({
+              manualRecoveryId: recoveryId,
+              manualRecoverySourceGeneration: sourceGeneration,
+              manualRecoveryAuthorizedBy: input.authorizedBy,
+              manualRecoveryAuthorizedAt: authorizedAt,
+              manualRecoveryObservedThrough: input.observedThrough,
+              manualRecoveryServiceModelId: input.modelId,
+              manualRecoverySpentAt: null,
+            }).where(and(
+              eq(work.recordId, recordRef),
+              eq(work.generation, admitted.generation),
+              eq(work.state, "due"),
+              isNull(work.acceptedModelBinding),
+            )).returning({ record_id: work.recordId }));
+          if (marked.length !== 1) {
+            throw new Error("Reflection manual recovery marker lost its generation fence");
+          }
+          queued += 1;
+        }
+      }
+      return pageResult({ queued, held: candidates.length - queued });
+    }, { isolationLevel: "read committed" });
   }
 
   async attachPublicationWithinTransaction(
@@ -830,6 +1493,252 @@ export class PostgresSemanticWorkStore
       .onConflictDoNothing({
         target: reflectionRecordDependencyChangeRepairs.changeCommitment,
       }));
+  }
+
+  /**
+   * Repair one legacy gap only after readiness has opened the exact structural
+   * edge and proved its child is a terminal sunset Record without a successor.
+   * This reserves the ordinary canonical change receipt; the normal bounded
+   * repair drain remains the sole owner of structural and authority-dependent
+   * one-hop admissions, and every later lifecycle hop remains restart-safe.
+   */
+  repairMissingTerminalStructuralDependency(input: Readonly<{
+    parentRecordRef: string;
+    parentProcessingGeneration: number;
+    childRecordRef: string;
+    childProcessingGeneration: number;
+  }>): Promise<"repaired" | "replayed" | "unavailable"> {
+    assertOpaque(input.parentRecordRef, "terminal dependency parent Record reference");
+    assertOpaque(input.childRecordRef, "terminal dependency child Record reference");
+    if (
+      !Number.isSafeInteger(input.parentProcessingGeneration)
+      || input.parentProcessingGeneration < 1
+      || !Number.isSafeInteger(input.childProcessingGeneration)
+      || input.childProcessingGeneration < 1
+    ) throw new RangeError("terminal dependency generations must be positive integers");
+
+    const syntheticChangeCommitment = this.options.commitments.recordChange({
+      recordRef: input.childRecordRef,
+      changeRef: `missing-terminal:sunset:v${input.childProcessingGeneration}`,
+    });
+    const exactGenerationCommitments = [
+      syntheticChangeCommitment,
+      this.options.commitments.recordChange({
+        recordRef: input.childRecordRef,
+        changeRef:
+          `lifecycle:current:sunset:v${input.childProcessingGeneration}`,
+      }),
+      this.options.commitments.recordChange({
+        recordRef: input.childRecordRef,
+        changeRef:
+          `lifecycle:stale:sunset:v${input.childProcessingGeneration}`,
+      }),
+    ];
+    return this.options.handle.transaction(async (tx) => {
+      const priorRepair = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          change_commitment:
+            reflectionRecordDependencyChangeRepairs.changeCommitment,
+        })
+          .from(reflectionRecordDependencyChangeRepairs)
+          .where(and(
+            eq(
+              reflectionRecordDependencyChangeRepairs.changedRecordId,
+              input.childRecordRef,
+            ),
+            inArray(
+              reflectionRecordDependencyChangeRepairs.changeCommitment,
+              exactGenerationCommitments,
+            ),
+          ))
+          .limit(1)
+          .for("share"));
+      if (priorRepair.length > 0) return "replayed" as const;
+
+      const childRows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          lifecycle: reflectionRecords.lifecycle,
+          disposition: reflectionRecords.disposition,
+          processing_generation: reflectionRecords.processingGeneration,
+        })
+          .from(reflectionRecords)
+          .where(eq(reflectionRecords.recordId, input.childRecordRef))
+          .limit(1)
+          .for("update"));
+      const child = childRows[0];
+      if (
+        child === undefined
+        || child.lifecycle !== "sunset"
+        || child.disposition !== "available"
+        || child.processing_generation !== input.childProcessingGeneration
+      ) return "unavailable" as const;
+
+      const childHeads = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          representation: reflectionRecordPayloadRepresentationHeads.representation,
+        })
+          .from(reflectionRecordPayloadRepresentationHeads)
+          .where(eq(
+            reflectionRecordPayloadRepresentationHeads.recordId,
+            input.childRecordRef,
+          ))
+          .orderBy(asc(
+            reflectionRecordPayloadRepresentationHeads.representation,
+          )));
+      if (
+        childHeads.length !== 1
+        || childHeads[0]?.representation !== "ordinary"
+      ) return "unavailable" as const;
+      const childUnsafePublication = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: reflectionRecordPublications.recordId,
+        })
+          .from(reflectionRecordPublications)
+          .where(and(
+            eq(reflectionRecordPublications.recordId, input.childRecordRef),
+            ne(reflectionRecordPublications.state, "complete"),
+          ))
+          .limit(1));
+      const childUnsafeReconciliation = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: reflectionRecordAuthorityReconciliations.recordId,
+        })
+          .from(reflectionRecordAuthorityReconciliations)
+          .where(and(
+            eq(
+              reflectionRecordAuthorityReconciliations.recordId,
+              input.childRecordRef,
+            ),
+            ne(reflectionRecordAuthorityReconciliations.state, "complete"),
+          ))
+          .limit(1));
+      if (
+        childUnsafePublication.length > 0
+        || childUnsafeReconciliation.length > 0
+      ) return "unavailable" as const;
+
+      const childSuccessor = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          successor_record_id: reflectionRecordSuccessors.successorRecordId,
+        })
+          .from(reflectionRecordSuccessors)
+          .where(eq(
+            reflectionRecordSuccessors.predecessorRecordId,
+            input.childRecordRef,
+          ))
+          .limit(1));
+      if (childSuccessor.length > 0) return "unavailable" as const;
+
+      const ordinaryHead = recordProductTypedDb.select({
+        record_id: reflectionRecordPayloadRepresentationHeads.recordId,
+      }).from(reflectionRecordPayloadRepresentationHeads).where(and(
+        eq(
+          reflectionRecordPayloadRepresentationHeads.recordId,
+          reflectionRecords.recordId,
+        ),
+        eq(
+          reflectionRecordPayloadRepresentationHeads.representation,
+          "ordinary",
+        ),
+      ));
+      const protectedHead = recordProductTypedDb.select({
+        record_id: reflectionRecordPayloadRepresentationHeads.recordId,
+      }).from(reflectionRecordPayloadRepresentationHeads).where(and(
+        eq(
+          reflectionRecordPayloadRepresentationHeads.recordId,
+          reflectionRecords.recordId,
+        ),
+        eq(
+          reflectionRecordPayloadRepresentationHeads.representation,
+          "protected",
+        ),
+      ));
+      const pendingPublication = recordProductTypedDb.select({
+        record_id: reflectionRecordPublications.recordId,
+      }).from(reflectionRecordPublications).where(and(
+        eq(reflectionRecordPublications.recordId, reflectionRecords.recordId),
+        ne(reflectionRecordPublications.state, "complete"),
+      ));
+      const pendingReconciliation = recordProductTypedDb.select({
+        record_id: reflectionRecordAuthorityReconciliations.recordId,
+      }).from(reflectionRecordAuthorityReconciliations).where(and(
+        eq(
+          reflectionRecordAuthorityReconciliations.recordId,
+          reflectionRecords.recordId,
+        ),
+        ne(reflectionRecordAuthorityReconciliations.state, "complete"),
+      ));
+      const eligibleParent = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: reflectionRecords.recordId,
+        })
+          .from(reflectionRecordDependencies)
+          .innerJoin(
+            reflectionRecords,
+            eq(
+              reflectionRecords.recordId,
+              reflectionRecordDependencies.parentRecordId,
+            ),
+          )
+          .innerJoin(
+            reflectionRecordSemanticWork,
+            eq(
+              reflectionRecordSemanticWork.recordId,
+              reflectionRecords.recordId,
+            ),
+          )
+          .where(and(
+            eq(
+              reflectionRecordDependencies.childRecordId,
+              input.childRecordRef,
+            ),
+            eq(reflectionRecords.recordId, input.parentRecordRef),
+            eq(
+              reflectionRecords.processingGeneration,
+              input.parentProcessingGeneration,
+            ),
+            eq(reflectionRecords.lifecycle, "current"),
+            eq(reflectionRecords.disposition, "available"),
+            gt(reflectionRecords.structuralHeight, 0),
+            eq(reflectionRecords.producerPolicyVersion, "candidate-policy-v1"),
+            eq(reflectionRecordSemanticWork.state, "complete"),
+            eq(
+              reflectionRecordSemanticWork.generation,
+              reflectionRecordSemanticWork.completedGeneration,
+            ),
+            isNull(reflectionRecordSemanticWork.claimGeneration),
+            isNull(reflectionRecordSemanticWork.leaseToken),
+            isNull(reflectionRecordSemanticWork.leaseExpiresAt),
+            isNull(reflectionRecordSemanticWork.acceptedModelBinding),
+            isNull(reflectionRecordSemanticWork.organizerProposalCheckpoint),
+            exists(ordinaryHead),
+            notExists(protectedHead),
+            notExists(pendingPublication),
+            notExists(pendingReconciliation),
+          ))
+          .limit(1)
+          .for("update", { of: reflectionRecordSemanticWork }));
+      if (eligibleParent.length !== 1) return "unavailable" as const;
+
+      const now = this.#clock();
+      const inserted = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.insert(reflectionRecordDependencyChangeRepairs)
+          .values({
+            changeCommitment: syntheticChangeCommitment,
+            changedRecordId: input.childRecordRef,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .onConflictDoNothing({
+            target: reflectionRecordDependencyChangeRepairs.changeCommitment,
+          })
+          .returning({
+            change_commitment:
+              reflectionRecordDependencyChangeRepairs.changeCommitment,
+          }));
+      if (inserted.length !== 1) return "replayed" as const;
+      return "repaired" as const;
+    }, { isolationLevel: "serializable" });
   }
 
   async enqueue(input: Readonly<{
@@ -1253,7 +2162,8 @@ export class PostgresSemanticWorkStore
                   candidate.execution_maximum_stage,
                   work.projection_refresh_only,
                   work.accepted_model_binding,
-                  work.accepted_model_binding_generation`,
+                  work.accepted_model_binding_generation,
+                  work.manual_recovery_id`,
         [
           now,
           MAXIMUM_ATTEMPTS,
@@ -1293,7 +2203,13 @@ export class PostgresSemanticWorkStore
       if ((rawBinding === null) !== (bindingGeneration === null)) {
         throw new TypeError("Invalid semantic work model binding");
       }
-      let modelBatchFamilyKey = "fresh";
+      const manualRecoveryId = row["manual_recovery_id"];
+      if (manualRecoveryId != null && typeof manualRecoveryId !== "string") {
+        throw new TypeError("Invalid semantic work manual recovery identity");
+      }
+      let modelBatchFamilyKey = manualRecoveryId == null
+        ? "fresh"
+        : `manual-recovery:${manualRecoveryId}`;
       if (rawBinding !== null) {
         if (bindingGeneration !== rowInteger(row, "generation")) {
           throw new TypeError("Invalid semantic work model binding generation");
@@ -1316,6 +2232,7 @@ export class PostgresSemanticWorkStore
           stage: stage as DurableSleepClaim["stage"],
           leaseToken: rowString(row, "lease_token"),
           modelBatchFamilyKey,
+          ...(manualRecoveryId == null ? {} : { operatorAuthorizedAttempt: true as const }),
           timing: {
             admittedAtEpochMs: rowDate(row, "due_since")!.getTime(),
             firstClaimedAtEpochMs: rowDate(row, "started_at")!.getTime(),
@@ -1362,11 +2279,8 @@ export class PostgresSemanticWorkStore
     };
   }
 
-  #currentClaimQuery(claim: DurableSleepClaim) {
-    return recordProductTypedDb.select({ record_id: reflectionRecordSemanticWork.recordId, lease_expires_at: reflectionRecordSemanticWork.leaseExpiresAt })
-        .from(reflectionRecordSemanticWork)
-        .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId))
-        .where(and(
+  #currentClaimPredicate(claim: DurableSleepClaim) {
+    return and(
           eq(reflectionRecordSemanticWork.recordId, claim.recordRef),
           eq(reflectionRecordSemanticWork.generation, claim.generation),
           eq(reflectionRecordSemanticWork.claimGeneration, claim.generation),
@@ -1376,7 +2290,14 @@ export class PostgresSemanticWorkStore
           eq(reflectionRecordSemanticWork.changeReason, claim.changeReason),
           gt(reflectionRecordSemanticWork.leaseExpiresAt, this.#clock()),
           eq(reflectionRecords.disposition, "available"),
-        ));
+        );
+  }
+
+  #currentClaimQuery(claim: DurableSleepClaim) {
+    return recordProductTypedDb.select({ record_id: reflectionRecordSemanticWork.recordId, lease_expires_at: reflectionRecordSemanticWork.leaseExpiresAt })
+        .from(reflectionRecordSemanticWork)
+        .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId))
+        .where(this.#currentClaimPredicate(claim));
   }
 
   /** Metadata-only access check. Publication uses the locking sibling below. */
@@ -1384,6 +2305,58 @@ export class PostgresSemanticWorkStore
     if (claim.logicalObjectRef !== claim.recordRef) return false;
     const rows = await executeTypedRecordProductQuery(this.options.handle, this.#currentClaimQuery(claim));
     return rows.length === 1;
+  }
+
+  /** A successful model call may outlive the lease that produced its proposal. */
+  async readOrganizerProposalCheckpoint(claim: DurableSleepClaim): Promise<Readonly<{
+    sealed: Uint8Array;
+    binding: MemoryOperationBinding;
+  }> | null> {
+    if (claim.logicalObjectRef !== claim.recordRef || claim.stage !== "organization") {
+      throw new DurableSleepOrganizationUnavailableError();
+    }
+    const work = reflectionRecordSemanticWork;
+    const [row] = await executeTypedRecordProductQuery(this.options.handle,
+      recordProductTypedDb.select({
+        organizer_proposal_checkpoint: work.organizerProposalCheckpoint,
+        accepted_model_binding: work.acceptedModelBinding,
+      }).from(work)
+        .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+        .where(this.#currentClaimPredicate(claim)));
+    if (row === undefined) throw new DurableSleepOrganizationUnavailableError();
+    if (row.organizer_proposal_checkpoint === null) return null;
+    return {
+      sealed: row.organizer_proposal_checkpoint,
+      binding: parseMemoryOperationBinding(row.accepted_model_binding),
+    };
+  }
+
+  /** Publish none of a shared provider batch until its validated answers are durable. */
+  async saveOrganizerProposalCheckpoints(items: readonly Readonly<{
+    claim: DurableSleepClaim;
+    binding: MemoryOperationBinding;
+    sealed: Uint8Array;
+  }>[]): Promise<void> {
+    const work = reflectionRecordSemanticWork;
+    await this.options.handle.transaction(async tx => {
+      // Match the lock order of accepted model binding.
+      for (const { claim, binding, sealed } of [...items].sort((left, right) =>
+        left.claim.recordRef.localeCompare(right.claim.recordRef))) {
+        if (claim.logicalObjectRef !== claim.recordRef || claim.stage !== "organization") {
+          throw new DurableSleepOrganizationUnavailableError();
+        }
+        const rows = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.update(work).set({ organizerProposalCheckpoint: sealed })
+            .from(reflectionRecords).where(and(
+              eq(reflectionRecords.recordId, work.recordId),
+              this.#currentClaimPredicate(claim),
+              eq(work.acceptedModelBindingGeneration, claim.generation),
+              eq(work.acceptedModelBinding, binding),
+              isNull(work.organizerProposalCheckpoint),
+            )).returning({ recordId: work.recordId }));
+        if (rows.length !== 1) throw new DurableSleepOrganizationUnavailableError();
+      }
+    }, { isolationLevel: "read committed" });
   }
 
   /**
@@ -1420,6 +2393,12 @@ export class PostgresSemanticWorkStore
           accepted_model_binding: reflectionRecordSemanticWork.acceptedModelBinding,
           accepted_model_binding_generation:
             reflectionRecordSemanticWork.acceptedModelBindingGeneration,
+          manual_recovery_id: reflectionRecordSemanticWork.manualRecoveryId,
+          manual_recovery_source_generation:
+            reflectionRecordSemanticWork.manualRecoverySourceGeneration,
+          manual_recovery_service_model_id:
+            reflectionRecordSemanticWork.manualRecoveryServiceModelId,
+          manual_recovery_spent_at: reflectionRecordSemanticWork.manualRecoverySpentAt,
           disposition: reflectionRecords.disposition,
         }).from(reflectionRecordSemanticWork)
           .innerJoin(
@@ -1433,9 +2412,14 @@ export class PostgresSemanticWorkStore
           .orderBy(asc(reflectionRecordSemanticWork.recordId))
           .for("update", { of: reflectionRecordSemanticWork }));
       if (rows.length !== sorted.length) throw new Error("Reflection model lease changed");
+      const rowsByRecordRef = new Map(rows.map(row => [row.record_id, row]));
+      if (rowsByRecordRef.size !== rows.length) {
+        throw new Error("Reflection model lease changed");
+      }
       const bindings: MemoryOperationBinding[] = [];
-      for (const [index, claim] of sorted.entries()) {
-        const row = rows[index]!;
+      for (const claim of sorted) {
+        const row = rowsByRecordRef.get(claim.recordRef);
+        if (row === undefined) throw new Error("Reflection model lease changed");
         const expiresAt = rowDate(
           { lease_expires_at: row["lease_expires_at"] },
           "lease_expires_at",
@@ -1478,10 +2462,34 @@ export class PostgresSemanticWorkStore
         )) throw new Error("Reflection model batch binding changed");
         return first;
       }
-      const accepted = parseMemoryOperationBinding(await resolve());
-      if (accepted.role !== "memoryReflection") {
+      const recoveryRows = rows.filter(row => row["manual_recovery_id"] != null);
+      if (recoveryRows.length !== 0 && recoveryRows.length !== rows.length) {
+        throw new Error("Reflection manual recovery batch changed");
+      }
+      const recoveryId = recoveryRows[0]?.["manual_recovery_id"];
+      const recoveryModelId = recoveryRows[0]?.["manual_recovery_service_model_id"];
+      if (recoveryRows.length > 0 && (
+        typeof recoveryId !== "string"
+        || typeof recoveryModelId !== "string"
+        || recoveryModelId.length === 0
+        || recoveryRows.some(row => row["manual_recovery_id"] !== recoveryId
+          || row["manual_recovery_service_model_id"] !== recoveryModelId
+          || row["manual_recovery_spent_at"] !== null
+          || !Number.isSafeInteger(row["manual_recovery_source_generation"])
+          || Number(row["manual_recovery_source_generation"])
+            !== Number(row["generation"]) - 1
+        )
+      )) throw new Error("Reflection manual recovery authorization changed");
+      const resolved = parseMemoryOperationBinding(await resolve());
+      if (resolved.role !== "memoryReflection") {
         throw new TypeError("Reflection model binding role is invalid");
       }
+      if (recoveryRows.length > 0 && resolved.kind !== "service") {
+        throw new DurableSleepOrganizationUnavailableError();
+      }
+      const accepted: MemoryOperationBinding = recoveryRows.length > 0
+        ? { ...resolved, modelId: recoveryModelId! }
+        : resolved;
       for (const claim of sorted) {
         const updated = await executeTypedRecordProductQuery(tx,
           recordProductTypedDb.update(reflectionRecordSemanticWork)
@@ -1498,6 +2506,12 @@ export class PostgresSemanticWorkStore
               eq(reflectionRecordSemanticWork.state, "claimed"),
               isNull(reflectionRecordSemanticWork.acceptedModelBinding),
               isNull(reflectionRecordSemanticWork.acceptedModelBindingGeneration),
+              recoveryRows.length === 0
+                ? undefined
+                : eq(reflectionRecordSemanticWork.manualRecoveryId, recoveryId!),
+              recoveryRows.length === 0
+                ? undefined
+                : isNull(reflectionRecordSemanticWork.manualRecoverySpentAt),
               gt(reflectionRecordSemanticWork.leaseExpiresAt, now),
             ))
             .returning({ record_id: reflectionRecordSemanticWork.recordId }));
@@ -1505,6 +2519,134 @@ export class PostgresSemanticWorkStore
       }
       return accepted;
     }, { isolationLevel: "serializable" });
+  }
+
+  /**
+   * Consume one operator-authorized provider attempt at the last durable
+   * boundary before dispatch. Binding a model is deliberately separate: a
+   * cooldown, replay-safety check, or lost lease must not spend the click.
+   *
+   * A stamped receipt is never reusable. This also expires receipts written
+   * by the older bind-time implementation without guessing whether a wire was
+   * reached. Same-generation markers belong to conditional saved-proposal
+   * recovery and cannot authorize a fresh model invocation.
+   */
+  async consumeManualProviderAttempt(
+    claims: readonly DurableSleepClaim[],
+  ): Promise<"not_applicable" | "consumed" | "blocked"> {
+    if (claims.length === 0) throw new TypeError("Reflection model batch cannot be empty");
+    const sorted = [...claims].sort((left, right) =>
+      left.recordRef.localeCompare(right.recordRef)
+    );
+    if (new Set(sorted.map(claim => claim.recordRef)).size !== sorted.length) {
+      throw new TypeError("Reflection model batch contains duplicate records");
+    }
+    return this.options.handle.transaction(async tx => {
+      const now = this.#clock();
+      const rows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: reflectionRecordSemanticWork.recordId,
+          generation: reflectionRecordSemanticWork.generation,
+          claim_generation: reflectionRecordSemanticWork.claimGeneration,
+          lease_token: reflectionRecordSemanticWork.leaseToken,
+          lease_expires_at: reflectionRecordSemanticWork.leaseExpiresAt,
+          state: reflectionRecordSemanticWork.state,
+          stage: reflectionRecordSemanticWork.stage,
+          change_reason: reflectionRecordSemanticWork.changeReason,
+          disposition: reflectionRecords.disposition,
+          accepted_model_binding: reflectionRecordSemanticWork.acceptedModelBinding,
+          accepted_model_binding_generation:
+            reflectionRecordSemanticWork.acceptedModelBindingGeneration,
+          manual_recovery_id: reflectionRecordSemanticWork.manualRecoveryId,
+          manual_recovery_source_generation:
+            reflectionRecordSemanticWork.manualRecoverySourceGeneration,
+          manual_recovery_service_model_id:
+            reflectionRecordSemanticWork.manualRecoveryServiceModelId,
+          manual_recovery_spent_at: reflectionRecordSemanticWork.manualRecoverySpentAt,
+        }).from(reflectionRecordSemanticWork)
+          .innerJoin(
+            reflectionRecords,
+            eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId),
+          )
+          .where(inArray(
+            reflectionRecordSemanticWork.recordId,
+            sorted.map(claim => claim.recordRef),
+          ))
+          .orderBy(asc(reflectionRecordSemanticWork.recordId))
+          .for("update", { of: reflectionRecordSemanticWork }));
+      if (rows.length !== sorted.length) return "blocked";
+      const rowsByRecordRef = new Map(rows.map(row => [row.record_id, row]));
+      if (rowsByRecordRef.size !== rows.length) return "blocked";
+      for (const claim of sorted) {
+        const row = rowsByRecordRef.get(claim.recordRef);
+        if (row === undefined) return "blocked";
+        const expiresAt = rowDate(
+          { lease_expires_at: row.lease_expires_at },
+          "lease_expires_at",
+        );
+        if (
+          row.record_id !== claim.recordRef
+          || row.generation !== claim.generation
+          || row.claim_generation !== claim.generation
+          || row.lease_token !== claim.leaseToken
+          || row.state !== "claimed"
+          || row.stage !== claim.stage
+          || row.change_reason !== claim.changeReason
+          || row.disposition !== "available"
+          || expiresAt === null
+          || expiresAt.getTime() <= now.getTime()
+        ) return "blocked";
+      }
+      const recoveryRows = rows.filter(row => row.manual_recovery_id !== null);
+      if (recoveryRows.length === 0) return "not_applicable";
+      if (recoveryRows.length !== rows.length) return "blocked";
+      const recoveryId = recoveryRows[0]!.manual_recovery_id;
+      if (typeof recoveryId !== "string") return "blocked";
+      for (const row of recoveryRows) {
+        const binding = row.accepted_model_binding === null
+          ? null
+          : parseMemoryOperationBinding(row.accepted_model_binding);
+        if (
+          row.manual_recovery_id !== recoveryId
+          || row.manual_recovery_spent_at !== null
+          || row.manual_recovery_source_generation !== row.generation - 1
+          || row.accepted_model_binding_generation !== row.generation
+          || binding?.kind !== "service"
+          || binding.role !== "memoryReflection"
+          || binding.modelId !== row.manual_recovery_service_model_id
+        ) return "blocked";
+      }
+      for (const claim of sorted) {
+        const consumed = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.update(reflectionRecordSemanticWork)
+            .set({
+              manualRecoverySpentAt: now,
+              updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
+            })
+            .where(and(
+              eq(reflectionRecordSemanticWork.recordId, claim.recordRef),
+              eq(reflectionRecordSemanticWork.generation, claim.generation),
+              eq(reflectionRecordSemanticWork.claimGeneration, claim.generation),
+              eq(reflectionRecordSemanticWork.leaseToken, claim.leaseToken),
+              eq(reflectionRecordSemanticWork.state, "claimed"),
+              eq(reflectionRecordSemanticWork.manualRecoveryId, recoveryId),
+              eq(
+                reflectionRecordSemanticWork.manualRecoverySourceGeneration,
+                claim.generation - 1,
+              ),
+              isNull(reflectionRecordSemanticWork.manualRecoverySpentAt),
+              gt(reflectionRecordSemanticWork.leaseExpiresAt, now),
+            ))
+            .returning({ record_id: reflectionRecordSemanticWork.recordId }));
+        if (consumed.length !== 1) {
+          throw new Error("Reflection manual recovery attempt changed");
+        }
+      }
+      return "consumed";
+    // Exact row locks plus the spent-at CAS serialize callers without a
+    // predicate read. READ COMMITTED lets the second caller observe the first
+    // stamp instead of surfacing a retryable 40001 after it waited on the lock.
+    }, { isolationLevel: "read committed" });
   }
 
   async settleCurrentState(input: Readonly<{
@@ -1616,6 +2758,7 @@ export class PostgresSemanticWorkStore
             waitingReason: null,
             ordinaryFallbackReason: null,
             completionOutcome: reason,
+            organizerProposalCheckpoint: null,
             completedAt: now,
             updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
           })
@@ -1721,6 +2864,14 @@ export class PostgresSemanticWorkStore
     return this.#claimedMutation(input.claim, async (tx, now) => {
       if (
         input.nextAttemptAt !== undefined
+        && input.retryAfterSchedulerDelay === true
+      ) {
+        throw new TypeError(
+          "Semantic work pause cannot combine an exact timestamp with the scheduler retry delay",
+        );
+      }
+      if (
+        input.nextAttemptAt !== undefined
         && (
           !Number.isSafeInteger(input.nextAttemptAt)
           || input.nextAttemptAt <= now.getTime()
@@ -1731,9 +2882,11 @@ export class PostgresSemanticWorkStore
           "Semantic work next attempt must be a future bounded timestamp",
         );
       }
-      const nextAttemptAt = input.nextAttemptAt === undefined
-        ? now
-        : new Date(input.nextAttemptAt);
+      const nextAttemptAt = input.retryAfterSchedulerDelay === true
+        ? new Date(now.getTime() + this.#retryMilliseconds)
+        : input.nextAttemptAt === undefined
+          ? now
+          : new Date(input.nextAttemptAt);
       const state = input.claim.stage === "authority_projection" ? "due" : "checkpointed";
       const rows = await executeTypedRecordProductQuery(tx,
         recordProductTypedDb.update(reflectionRecordSemanticWork)
@@ -1792,6 +2945,7 @@ export class PostgresSemanticWorkStore
           leaseExpiresAt: null, nextAttemptAt: null, quarantineRound: 0, recoverAfter: null,
           failureCode: null, failureDetail: null, waitingReason: null,
           ordinaryFallbackReason: null, completionOutcome: "completed" as const,
+          organizerProposalCheckpoint: null,
           completedAt: sql`now()`} : {}),
         updatedAt: sql`greatest(${table.updatedAt}, now())`,
       }).where(eq(table.recordId, input.recordRef)));
@@ -1824,6 +2978,8 @@ export class PostgresSemanticWorkStore
             waitingReason: null,
             ordinaryFallbackReason: input.ordinaryFallbackReason ?? null,
             completionOutcome: input.completionOutcome ?? "completed",
+            organizerProposalCheckpoint: null,
+            organizerProposalResumedAt: input.resumedOrganizerProposal === true ? now : null,
             completedAt: now,
             updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
           })
@@ -1852,8 +3008,113 @@ export class PostgresSemanticWorkStore
     input: Parameters<DurableSleepWorkPort["defer"]>[0],
   ): Promise<DurableSleepDeferralResult> {
     return this.#claimedDeferral(input.claim, async (tx, now) => {
-      const exhausted = sql`${reflectionRecordSemanticWork.attemptCount}
-        >= ${MAXIMUM_ATTEMPTS}`;
+      if (input.requiresFreshCalculation === true) {
+        const conditional = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.select({
+            generation: reflectionRecordSemanticWork.generation,
+            accepted_model_binding: reflectionRecordSemanticWork.acceptedModelBinding,
+            accepted_model_binding_generation:
+              reflectionRecordSemanticWork.acceptedModelBindingGeneration,
+            manual_recovery_id: reflectionRecordSemanticWork.manualRecoveryId,
+            manual_recovery_source_generation:
+              reflectionRecordSemanticWork.manualRecoverySourceGeneration,
+            manual_recovery_authorized_by:
+              reflectionRecordSemanticWork.manualRecoveryAuthorizedBy,
+            manual_recovery_authorized_at:
+              reflectionRecordSemanticWork.manualRecoveryAuthorizedAt,
+            manual_recovery_observed_through:
+              reflectionRecordSemanticWork.manualRecoveryObservedThrough,
+            manual_recovery_service_model_id:
+              reflectionRecordSemanticWork.manualRecoveryServiceModelId,
+            manual_recovery_spent_at:
+              reflectionRecordSemanticWork.manualRecoverySpentAt,
+            organizer_proposal_checkpoint:
+              reflectionRecordSemanticWork.organizerProposalCheckpoint,
+          }).from(reflectionRecordSemanticWork).where(and(
+            eq(reflectionRecordSemanticWork.recordId, input.claim.recordRef),
+            eq(reflectionRecordSemanticWork.generation, input.claim.generation),
+            eq(reflectionRecordSemanticWork.claimGeneration, input.claim.generation),
+            eq(reflectionRecordSemanticWork.leaseToken, input.claim.leaseToken),
+            eq(reflectionRecordSemanticWork.state, "claimed"),
+            eq(reflectionRecordSemanticWork.stage, input.claim.stage),
+            gt(reflectionRecordSemanticWork.leaseExpiresAt, now),
+          )).for("update", { of: reflectionRecordSemanticWork }));
+        const authorization = conditional[0];
+        const binding = authorization?.accepted_model_binding === null
+          || authorization?.accepted_model_binding === undefined
+          ? null
+          : parseMemoryOperationBinding(authorization.accepted_model_binding);
+        const authorizedAt = authorization === undefined
+          ? null
+          : rowDate({
+              manual_recovery_authorized_at: authorization.manual_recovery_authorized_at,
+            }, "manual_recovery_authorized_at");
+        const observedThrough = authorization === undefined
+          ? null
+          : rowDate({
+              manual_recovery_observed_through: authorization.manual_recovery_observed_through,
+            }, "manual_recovery_observed_through");
+        const recoveryId = authorization?.manual_recovery_id;
+        const authorizedBy = authorization?.manual_recovery_authorized_by;
+        const modelId = authorization?.manual_recovery_service_model_id;
+        const conditionallyAuthorized = conditional.length === 1
+          && authorization !== undefined
+          && binding?.kind === "service"
+          && authorization.accepted_model_binding_generation === input.claim.generation
+          && authorization.manual_recovery_source_generation === input.claim.generation
+          && typeof recoveryId === "string"
+          && typeof authorizedBy === "string"
+          && authorizedAt !== null
+          && observedThrough !== null
+          && typeof modelId === "string"
+          && modelId.length > 0
+          && authorization.manual_recovery_spent_at === null
+          && authorization.organizer_proposal_checkpoint !== null;
+        if (conditionallyAuthorized) {
+          // The conditional SELECT already holds the existing work row. Its
+          // unique recovery receipt can advance under that row lock without
+          // taking an advisory lock after the fact.
+          const admitted = await admitSerializedSemanticWorkWithinTransaction(tx, {
+            recordRef: input.claim.recordRef,
+            changeReason: input.claim.changeReason,
+            admissionCommitment: this.options.commitments.manualRecovery({
+              recordRef: input.claim.recordRef,
+              sourceGeneration: input.claim.generation,
+              recoveryId,
+              authorizedBy,
+              observedThrough,
+            }),
+            now,
+          }, true);
+          if (!admitted.admitted || admitted.generation !== input.claim.generation + 1) {
+            throw new Error("Reflection conditional recovery lost its generation fence");
+          }
+          const transferred = await executeTypedRecordProductQuery(tx,
+            recordProductTypedDb.update(reflectionRecordSemanticWork).set({
+              manualRecoveryId: recoveryId,
+              manualRecoverySourceGeneration: input.claim.generation,
+              manualRecoveryAuthorizedBy: authorizedBy,
+              manualRecoveryAuthorizedAt: authorizedAt,
+              manualRecoveryObservedThrough: observedThrough,
+              manualRecoveryServiceModelId: modelId,
+              manualRecoverySpentAt: null,
+            }).where(and(
+              eq(reflectionRecordSemanticWork.recordId, input.claim.recordRef),
+              eq(reflectionRecordSemanticWork.generation, admitted.generation),
+              eq(reflectionRecordSemanticWork.state, "due"),
+              isNull(reflectionRecordSemanticWork.acceptedModelBinding),
+              isNull(reflectionRecordSemanticWork.organizerProposalCheckpoint),
+            )).returning({ record_id: reflectionRecordSemanticWork.recordId }));
+          if (transferred.length !== 1) {
+            throw new Error("Reflection conditional recovery marker was not transferred");
+          }
+          return "deferred";
+        }
+      }
+      const exhausted = input.requiresFreshCalculation === true
+        ? sql`true`
+        : sql`${reflectionRecordSemanticWork.attemptCount}
+          >= ${MAXIMUM_ATTEMPTS}`;
       const rows = await executeTypedRecordProductQuery(tx,
         recordProductTypedDb.update(reflectionRecordSemanticWork)
           .set({
@@ -1866,23 +3127,33 @@ export class PostgresSemanticWorkStore
             }::timestamptz end`,
             quarantineRound: sql`${reflectionRecordSemanticWork.quarantineRound}
               + case when ${exhausted} then 1 else 0 end`,
-            recoverAfter: sql`case when ${exhausted} then
-              ${now}::timestamptz + least(
-                ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.maximumDelayMilliseconds}
-                  ::double precision,
-                ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.initialDelayMilliseconds}
-                  ::double precision * power(
-                  ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.backoffMultiplier}
-                    ::double precision,
-                  ${reflectionRecordSemanticWork.quarantineRound}::double precision
-                )
-              ) * interval '1 millisecond'
-              else null end`,
+            recoverAfter: input.requiresFreshCalculation === true
+              ? sql`'infinity'::timestamptz`
+              : sql`case when ${exhausted} then
+                  ${now}::timestamptz + least(
+                    ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.maximumDelayMilliseconds}
+                      ::double precision,
+                    ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.initialDelayMilliseconds}
+                      ::double precision * power(
+                      ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.backoffMultiplier}
+                        ::double precision,
+                      ${reflectionRecordSemanticWork.quarantineRound}::double precision
+                    )
+                  ) * interval '1 millisecond'
+                  else null end`,
             failureCode: input.failureCode,
             failureDetail: input.failureDetail ?? null,
             waitingReason: null,
             completionOutcome: null,
             completedAt: null,
+            ...(input.requiresFreshCalculation === true
+              ? {
+                  organizerProposalCheckpoint: null,
+                  organizerProposalResumedAt: now,
+                  recoveryPolicyVersion:
+                    DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION,
+                }
+              : {}),
             updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
           })
           .where(and(
@@ -1971,6 +3242,9 @@ export class PostgresSemanticWorkStore
           record_id: reflectionRecords.recordId,
           processing_generation: reflectionRecords.processingGeneration,
           structural_height: reflectionRecords.structuralHeight,
+          work_record_id: sql<string | null>`${
+            reflectionRecordSemanticWork.recordId
+          }`.as("work_record_id"),
         })
           .from(reflectionRecords)
           .leftJoin(
@@ -1986,6 +3260,13 @@ export class PostgresSemanticWorkStore
                 gt(reflectionRecords.structuralHeight, 0),
                 eq(reflectionRecordSemanticWork.state, "complete"),
                 ne(reflectionRecordSemanticWork.changeReason, "scheduled_review"),
+                or(
+                  isNull(reflectionRecordSemanticWork.completionOutcome),
+                  ne(
+                    reflectionRecordSemanticWork.completionOutcome,
+                    "provider_outcome_unknown",
+                  ),
+                ),
               ),
             ),
             input.continuation === undefined
@@ -1999,8 +3280,56 @@ export class PostgresSemanticWorkStore
       let admitted = 0;
       for (const row of selected) {
         const recordRef = rowString(row, "record_id");
-        const processingGeneration = rowInteger(row, "processing_generation");
-        const structuralHeight = rowInteger(row, "structural_height");
+        // Never wait behind a manual recovery that already owns this Record's
+        // work row. A later bounded page can reconsider the same candidate.
+        if (!await tryLockSemanticWorkAdmission(tx, recordRef)) continue;
+        // The page scan is intentionally unlocked so unrelated Records do not
+        // serialize. Re-read both the Record coordinate and mutable work row;
+        // a provider hold or operator recovery may have arrived after it.
+        const currentRecords = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.select({
+            processing_generation: reflectionRecords.processingGeneration,
+            structural_height: reflectionRecords.structuralHeight,
+            lifecycle: reflectionRecords.lifecycle,
+            disposition: reflectionRecords.disposition,
+          }).from(reflectionRecords)
+            .where(eq(reflectionRecords.recordId, recordRef)));
+        const currentWorkRows = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.select({
+            state: reflectionRecordSemanticWork.state,
+            change_reason: reflectionRecordSemanticWork.changeReason,
+            completion_outcome: reflectionRecordSemanticWork.completionOutcome,
+          }).from(reflectionRecordSemanticWork)
+            .where(eq(reflectionRecordSemanticWork.recordId, recordRef))
+            .for("update", { skipLocked: true }));
+        const currentRecord = currentRecords[0];
+        const currentWork = currentWorkRows[0];
+        const scannedWorkExisted = row["work_record_id"] !== null;
+        if (currentWork === undefined && scannedWorkExisted) continue;
+        if (currentWork === undefined) {
+          const visibleWork = await executeTypedRecordProductQuery(tx,
+            recordProductTypedDb.select({
+              record_id: reflectionRecordSemanticWork.recordId,
+            }).from(reflectionRecordSemanticWork)
+              .where(eq(reflectionRecordSemanticWork.recordId, recordRef)));
+          if (visibleWork.length > 0) continue;
+        }
+        if (
+          currentRecord === undefined
+          || currentRecord.disposition !== "available"
+          || (
+            currentWork !== undefined
+            && (
+              currentRecord.lifecycle !== "current"
+              || currentRecord.structural_height <= 0
+              || currentWork.state !== "complete"
+              || currentWork.change_reason === "scheduled_review"
+              || currentWork.completion_outcome === "provider_outcome_unknown"
+            )
+          )
+        ) continue;
+        const processingGeneration = currentRecord.processing_generation;
+        const structuralHeight = currentRecord.structural_height;
         const result = await admitSemanticWorkWithinTransaction(tx, {
           recordRef,
           changeReason: structuralHeight === 0 ? "created" : "scheduled_review",
@@ -2181,6 +3510,8 @@ export class PostgresSemanticWorkStore
     limit: number;
     policyVersion: string;
     continuation?: string;
+    /** Restrict repair to pre-dispatch quarantines caused by candidate-set churn. */
+    undispatchedCandidateRecordChangedOnly?: boolean;
   }>): Promise<SemanticWorkRepairPage> {
     assertPageLimit(input.limit);
     assertOpaque(input.policyVersion, "candidate-policy recovery version");
@@ -2204,6 +3535,15 @@ export class PostgresSemanticWorkStore
             eq(reflectionRecords.lifecycle, "current"),
             eq(reflectionRecordSemanticWork.state, "quarantined"),
             eq(reflectionRecordSemanticWork.failureCode, "candidate_unavailable"),
+            input.undispatchedCandidateRecordChangedOnly === true
+              ? eq(
+                reflectionRecordSemanticWork.failureDetail,
+                "candidate_record_changed",
+              )
+              : undefined,
+            input.undispatchedCandidateRecordChangedOnly === true
+              ? isNull(reflectionRecordSemanticWork.acceptedModelBinding)
+              : undefined,
             input.continuation === undefined
               ? undefined
               : gt(reflectionRecords.recordId, input.continuation),
@@ -2217,6 +3557,34 @@ export class PostgresSemanticWorkStore
         const recordRef = rowString(row, "record_id");
         const processingGeneration = rowInteger(row, "processing_generation");
         const structuralHeight = rowInteger(row, "structural_height");
+        // Reuse the canonical admission lock order before trusting the scan.
+        // A worker may have reclaimed or bound this generation since the page
+        // SELECT; the locked latest row is the authority for repair admission.
+        await lockSemanticWorkAdmission(tx, recordRef);
+        const latest = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.select({
+            state: reflectionRecordSemanticWork.state,
+            failure_code: reflectionRecordSemanticWork.failureCode,
+            failure_detail: reflectionRecordSemanticWork.failureDetail,
+            accepted_model_binding:
+              reflectionRecordSemanticWork.acceptedModelBinding,
+          })
+            .from(reflectionRecordSemanticWork)
+            .where(eq(reflectionRecordSemanticWork.recordId, recordRef))
+            .for("update"));
+        const current = latest[0];
+        if (
+          current === undefined
+          || current["state"] !== "quarantined"
+          || current["failure_code"] !== "candidate_unavailable"
+          || (
+            input.undispatchedCandidateRecordChangedOnly === true
+            && (
+              current["failure_detail"] !== "candidate_record_changed"
+              || current["accepted_model_binding"] !== null
+            )
+          )
+        ) continue;
         const result = await admitSemanticWorkWithinTransaction(tx, {
           recordRef,
           changeReason: structuralHeight === 0 ? "created" : "scheduled_review",

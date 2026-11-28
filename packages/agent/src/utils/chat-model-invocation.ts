@@ -550,7 +550,7 @@ async function invokeOnceWithShortRetries(
   fundingService: ModelFundingService | undefined,
   fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean; readonly assertStillAuthorized?: () => Promise<void>; readonly beforeProviderDispatch?: () => Promise<void> },
   endpoint: string,
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
 ): Promise<AIMessage> {
@@ -585,6 +585,12 @@ async function invokeOnceWithShortRetries(
         endpoint,
         signal: llmCallConfig.signal,
         hasObservedProviderWork: () => hasAssistantVisibleOutputForCurrentTurn(agentId),
+        ...(attemptPolicyOptions.assertStillAuthorized === undefined ? {} : {
+          assertStillAuthorized: attemptPolicyOptions.assertStillAuthorized,
+        }),
+        ...(attemptPolicyOptions.beforeProviderDispatch === undefined ? {} : {
+          beforeProviderDispatch: attemptPolicyOptions.beforeProviderDispatch,
+        }),
         invoke: async () => {
           const response = await invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress);
           attemptPolicyOptions.validateResponse?.(response);
@@ -592,6 +598,7 @@ async function invokeOnceWithShortRetries(
         },
       });
     } catch (error) {
+      if (error instanceof ForegroundFundingRecheckError) throw error;
       const personalAttemptError = error instanceof PersonalAttemptInvocationError ? error : undefined;
       const providerError = personalAttemptError?.cause ?? error;
       // Caller cancellation is a terminal control-flow outcome, not a model
@@ -652,7 +659,7 @@ async function invokeForegroundAttemptWithUsageContext(
   funding: UsageFundingProvenance,
   useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean; readonly assertStillAuthorized?: () => Promise<void>; readonly beforeProviderDispatch?: () => Promise<void> },
   endpoint: string,
 ): Promise<AIMessage> {
   const invoke = () => invokeOnceWithShortRetries(
@@ -919,6 +926,8 @@ async function invokeScopedChatModelWithFallback(
     providerCacheRoomId?: string | null;
     /** Restricted research only: recover a rejected context on this same model. */
     recoverContext?: RecoverPreparedContext;
+    /** Trusted live fence run at the final direct or marketplace provider-attempt seam. */
+    beforeProviderDispatch?: (signal?: AbortSignal) => Promise<void>;
   },
 ): Promise<{ response: AIMessage; modelUsed: string }> {
   const callerProviderTimeoutMs = invokeOptions?.providerTimeoutMs;
@@ -1221,10 +1230,10 @@ async function invokeScopedChatModelWithFallback(
                 ...(openRouterSessionId === undefined ? {} : { openrouterSessionId: openRouterSessionId }),
                 funding: surplusFunding,
                 hasDeliveredOutput: attemptVisibility.hasVisibleOutput,
-                ...(providerMode === "any" ? {
+                ...(providerMode === "any" || invokeOptions?.beforeProviderDispatch !== undefined ? {
                   assertStillAuthorized: async () => {
                     assertNotCancelled();
-                    if (!allowsSellerBroadening()) {
+                    if (providerMode === "any" && !allowsSellerBroadening()) {
                       throw new ForegroundFundingRecheckError(new Error("Surplus seller broadening is no longer authorized."));
                     }
                     try {
@@ -1234,6 +1243,15 @@ async function invokeScopedChatModelWithFallback(
                     assertNotCancelled();
                   },
                 } : {}),
+                ...(invokeOptions?.beforeProviderDispatch === undefined ? {} : {
+                  beforeProviderDispatch: async () => {
+                    try {
+                      await invokeOptions.beforeProviderDispatch!(invocationConfig?.signal);
+                    } catch (error) {
+                      throw new ForegroundFundingRecheckError(error);
+                    }
+                  },
+                }),
                 ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
                 invokeModel: (model, selectedMessages, selectedConfig) => invokeForegroundAttemptWithUsageContext(
                   model,
@@ -1370,6 +1388,23 @@ async function invokeScopedChatModelWithFallback(
               ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
               onOpenRouterCreditHoldSettled: () => { creditHoldSettledByModel.add(currentModelId); },
               hasAttemptOutput: attemptVisibility.hasVisibleOutput,
+              ...(invokeOptions?.beforeProviderDispatch === undefined ? {} : {
+                assertStillAuthorized: async () => {
+                  assertNotCancelled();
+                  try {
+                    if (attemptFundingSession) await attemptFundingSession.recheckAttempt(currentModelId, "direct");
+                    else await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
+                  } catch (error) { throw new ForegroundFundingRecheckError(error); }
+                  assertNotCancelled();
+                },
+                beforeProviderDispatch: async () => {
+                  try {
+                    await invokeOptions.beforeProviderDispatch!(invocationConfig?.signal);
+                  } catch (error) {
+                    throw new ForegroundFundingRecheckError(error);
+                  }
+                },
+              }),
             },
             endpoint,
           );

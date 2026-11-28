@@ -2710,6 +2710,125 @@
       "when": 1794420507762,
       "tag": "0386_blue_vulcan",
       "breakpoints": true
+    },
+    {
+      "idx": 387,
+      "version": "7",
+      "when": 1795713624762,
+      "tag": "0387_eminent_absorbing_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 388,
+      "version": "7",
+      "when": 1795713910646,
+      "tag": "0388_acoustic_lester",
+      "breakpoints": true
+    },
+    {
+      "idx": 389,
+      "version": "7",
+      "when": 1795715552085,
+      "tag": "0389_memory_review_model_recovery_privileges",
+      "breakpoints": true
+    },
+    {
+      "idx": 390,
+      "version": "7",
+      "when": 1795715797169,
+      "tag": "0390_protected_task_wake_continuation_fk_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 391,
+      "version": "7",
+      "when": 1795718103180,
+      "tag": "0391_memory_review_receipt_write_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 392,
+      "version": "7",
+      "when": 1795782909201,
+      "tag": "0392_flaky_spencer_smythe",
+      "breakpoints": true
+    },
+    {
+      "idx": 393,
+      "version": "7",
+      "when": 1795786131322,
+      "tag": "0393_past_shocker",
+      "breakpoints": true
+    },
+    {
+      "idx": 394,
+      "version": "7",
+      "when": 1795788045623,
+      "tag": "0394_absurd_young_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 395,
+      "version": "7",
+      "when": 1795803672581,
+      "tag": "0395_big_blizzard",
+      "breakpoints": true
+    },
+    {
+      "idx": 396,
+      "version": "7",
+      "when": 1795804193698,
+      "tag": "0396_wise_apocalypse",
+      "breakpoints": true
+    },
+    {
+      "idx": 397,
+      "version": "7",
+      "when": 1795804778273,
+      "tag": "0397_dry_mikhail_rasputin",
+      "breakpoints": true
+    },
+    {
+      "idx": 398,
+      "version": "7",
+      "when": 1795804990785,
+      "tag": "0398_tricky_leper_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 399,
+      "version": "7",
+      "when": 1795808592289,
+      "tag": "0399_thick_madame_masque",
+      "breakpoints": true
+    },
+    {
+      "idx": 400,
+      "version": "7",
+      "when": 1795808997262,
+      "tag": "0400_curious_professor_monster",
+      "breakpoints": true
+    },
+    {
+      "idx": 401,
+      "version": "7",
+      "when": 1795809314489,
+      "tag": "0401_fearless_giant_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1795809998935,
+      "tag": "0402_romantic_frightful_four",
+      "breakpoints": true
+    },
+    {
+      "idx": 403,
+      "version": "7",
+      "when": 1795873143791,
+      "tag": "0403_brainy_puppet_master",
+      "breakpoints": true
     }
   ]
 }

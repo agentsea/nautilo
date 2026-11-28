@@ -69,6 +69,7 @@ export * from "./server-provider-policy";
 export * from "./personal-provider-credentials";
 export * from "./personal-capability-preferences";
 export * from "./memory-review";
+export * from "./memory-recovery-runs";
 export * from "./encryption-transition";
 export * from "./mcp-servers";
 export * from "./skills";

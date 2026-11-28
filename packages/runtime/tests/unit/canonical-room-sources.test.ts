@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import type {
   CanonicalRecordSourceReadPort,
@@ -15,6 +15,7 @@ import {
 const ROOM = "55000000-0000-4000-8000-000000000001";
 const NAMESPACE = "66000000-0000-4000-8000-000000000001";
 const MEMORY = "77000000-0000-4000-8000-000000000001";
+const HUMAN = "11111111-1111-4111-8111-111111111111";
 const BINDING = `journal:namespace:${NAMESPACE}:ordinary:v1`;
 const VECTOR = Object.freeze(new Array<number>(1_536).fill(Math.fround(0.01)));
 const QUERY_EMBEDDING = Object.freeze({
@@ -40,12 +41,21 @@ const MEMORY_ROW: OrdinaryMemorySourceRow = Object.freeze({
   updatedAtCoordinate: "2026-08-14T10:00:00.864695Z",
 });
 
-function bindings() {
+function bindings(humanRefs: readonly string[] = [HUMAN]) {
   return {
     resolve: async (bindingRef: string) =>
       bindingRef === BINDING ? { roomId: ROOM, namespaceId: NAMESPACE } : null,
     resolveRoom: async (roomId: string) =>
       roomId === ROOM ? { roomId: ROOM, namespaceId: NAMESPACE } : null,
+    resolveNamespace: async (namespaceId: string) =>
+      namespaceId === NAMESPACE
+        ? {
+            roomId: ROOM,
+            namespaceId: NAMESPACE,
+            bindingRef: BINDING,
+            audience: { humanRefs, includesPublicBoundary: false },
+          }
+        : null,
   };
 }
 
@@ -73,15 +83,24 @@ function adapter(input: Readonly<{
   ordinary?: OrdinaryRoomSourceQueryPort;
   protectedMemoryCandidates?: RoomLocalMemoryCandidatePort;
   protectedSource?: CanonicalRecordSourceReadPort;
+  audienceHumanRefs?: readonly string[];
+  blocked?: boolean;
+  authorityBlockInputs?: unknown[];
 }> = {}) {
   return new SelectedRoomLocalSourceAdapter({
     selection: {
       selectedRepresentation: input.representation ?? "ordinary",
       migrationGeneration: 1,
     },
-    bindings: bindings(),
+    bindings: bindings(input.audienceHumanRefs),
     ordinary: input.ordinary ?? queries(),
     fingerprints: FINGERPRINTS,
+    authorityBlocks: {
+      isImmediatelyBlocked: async (value) => {
+        input.authorityBlockInputs?.push(value);
+        return input.blocked === true ? "blocked" : null;
+      },
+    },
     ...(input.protectedSource === undefined
       ? {}
       : { protectedSource: input.protectedSource }),
@@ -141,6 +160,45 @@ describe("selected Room-local Memory and Message source adapter", () => {
         },
       }],
     });
+  });
+
+  test("keeps the legacy fingerprint while selecting revision-zero Memory explicitly", async () => {
+    const legacy = { ...MEMORY_ROW, contentRevision: 0 };
+    const expectedFingerprint = createHmac("sha256", new Uint8Array(32).fill(9));
+    for (const value of [
+      "nautilo/reflection/ordinary-memory-observation/v1",
+      legacy.id, "legacy", legacy.type, legacy.content,
+    ]) {
+      expectedFingerprint.update(`${Buffer.byteLength(value, "utf8")}:${value}`, "utf8");
+    }
+    const fingerprint = `hmac-sha256:${expectedFingerprint.digest("base64url")}`;
+    const source = adapter({ ordinary: queries({
+      searchMemories: async () => [{ ...legacy, score: 0.9 }],
+      readMemory: async () => legacy,
+    }) });
+    const search = await source.search({ roomAnchorRef: ROOM, embedding: QUERY_EMBEDDING, limit: 4 });
+    const opened = await source.open({ candidate: {
+      kind: "memory", memoryRef: MEMORY, logicalSourceRef: `memory:${MEMORY}`, score: 0.9,
+      contentRevision: 0, embeddingRevision: 0, embeddingProvenance: QUERY_EMBEDDING.provenance,
+      updatedAtCoordinate: legacy.updatedAtCoordinate, authorityNamespaceRefs: [NAMESPACE],
+      audience: { humanRefs: [], includesPublicBoundary: false },
+      readNamespaceRef: NAMESPACE, readBindingRef: BINDING,
+    } });
+    const observation = { observedRevision: "0", observedContentFingerprint: fingerprint };
+    expect(search).toMatchObject({ status: "available", candidates: [{
+      snapshot: observation, dependency: observation,
+    }] });
+    expect(opened).toMatchObject({ status: "available", snapshot: observation, dependency: observation });
+    if (opened.status !== "available") throw new Error("missing legacy Memory");
+    const { observedRevision: _revision, ...oldDependency } = opened.dependency;
+    const read = (target: typeof source, dependency: typeof oldDependency) => target.readExact({
+      dependency, evidenceBindingRef: BINDING, returnedBytesMaximum: 8_192,
+    });
+    expect(await read(source, oldDependency)).toMatchObject({ status: "available" });
+    expect(await read(source, opened.dependency)).toMatchObject({ status: "available" });
+    const changedContent = adapter({ ordinary: queries({ readMemory: async () => ({ ...legacy, content: "Edited" }) }) });
+    expect(await read(changedContent, oldDependency)).toEqual({ status: "changed" });
+    expect(await read(adapter(), oldDependency)).toEqual({ status: "changed" });
   });
 
   test("drops a Memory changed after vector candidate discovery", async () => {
@@ -222,6 +280,102 @@ describe("selected Room-local Memory and Message source adapter", () => {
     expect(await adapter().open({
       candidate: { ...candidate, updatedAtCoordinate: "2026-08-14T10:00:00.864696Z" },
     })).toEqual({ status: "stale" });
+  });
+
+  test("reopens declared inherited Memory only through its native eligible audience", async () => {
+    const dependency = {
+      sourceKind: "memory",
+      logicalSourceRef: `memory:${MEMORY}`,
+      observedRevision: "4",
+      observedContentFingerprint: FINGERPRINTS.memory(MEMORY_ROW),
+      terminalAuthorityLeafHandle: NAMESPACE,
+      authorityBearing: true,
+    } as const;
+    const request = {
+      dependency,
+      owningRecordRef: "record:summary",
+      evidenceBindingRef:
+        "journal:namespace:88000000-0000-4000-8000-000000000001:ordinary:v1",
+      invocationAudience: {
+        humanRefs: [HUMAN],
+        includesPublicBoundary: false,
+      },
+      returnedBytesMaximum: 8_192,
+    } as const;
+    const authorityBlockInputs: unknown[] = [];
+    expect(await adapter({ authorityBlockInputs }).readExactDeclaredMemory(request)).toEqual({
+      status: "available",
+      kind: "memory",
+      content: MEMORY_ROW.content,
+    });
+    expect(authorityBlockInputs).toEqual([{
+      recordRef: "record:summary",
+      terminalAuthorityLeafHandles: [NAMESPACE],
+    }]);
+    expect(await adapter({ audienceHumanRefs: ["human:other"] })
+      .readExactDeclaredMemory(request)).toEqual({ status: "unavailable" });
+    expect(await adapter({ blocked: true }).readExactDeclaredMemory(request))
+      .toEqual({ status: "unavailable" });
+    expect(await adapter().readExactDeclaredMemory({
+      ...request,
+      dependency: {
+        ...dependency,
+        terminalAuthorityLeafHandle:
+          "99000000-0000-4000-8000-000000000001",
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(await adapter().readExactDeclaredMemory({
+      ...request,
+      dependency: {
+        ...dependency,
+        observedContentFingerprint: "hmac-sha256:wrong",
+      },
+    })).toEqual({ status: "changed" });
+    expect(await adapter().readExactDeclaredMemory({
+      ...request,
+      dependency: { ...dependency, observedRevision: "" },
+    })).toEqual({ status: "unavailable" });
+    expect(await adapter().readExactDeclaredMemory({
+      ...request,
+      dependency: { ...dependency, observedContentFingerprint: "" },
+    })).toEqual({ status: "unavailable" });
+  });
+
+  test("inherited Memory opening excludes same-binding and protected reads", async () => {
+    const dependency = {
+      sourceKind: "memory",
+      logicalSourceRef: `memory:${MEMORY}`,
+      observedRevision: "4",
+      observedContentFingerprint: FINGERPRINTS.memory(MEMORY_ROW),
+      terminalAuthorityLeafHandle: NAMESPACE,
+      authorityBearing: true,
+    } as const;
+    const input = {
+      dependency,
+      owningRecordRef: "record:summary",
+      evidenceBindingRef: BINDING,
+      invocationAudience: {
+        humanRefs: [HUMAN],
+        includesPublicBoundary: false,
+      },
+      returnedBytesMaximum: 8_192,
+    } as const;
+    expect(await adapter().readExactDeclaredMemory(input))
+      .toEqual({ status: "not_applicable" });
+    let ordinaryReads = 0;
+    expect(await adapter({
+      representation: "protected",
+      ordinary: queries({
+        readMemory: async () => {
+          ordinaryReads += 1;
+          return MEMORY_ROW;
+        },
+      }),
+    }).readExactDeclaredMemory({
+      ...input,
+      evidenceBindingRef: "protected:other",
+    })).toEqual({ status: "not_applicable" });
+    expect(ordinaryReads).toBe(0);
   });
 
   test("reauthorizes exact Message Room, revision, and Stenographer fingerprint", async () => {

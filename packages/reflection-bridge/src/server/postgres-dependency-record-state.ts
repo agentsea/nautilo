@@ -1,4 +1,13 @@
-import { and, asc, eq, reflectionRecords, reflectionRecordSuccessors, reflectionRecordPayloadRepresentations } from "@nautilo/db";
+import {
+  and,
+  asc,
+  eq,
+  reflectionRecordDependencies,
+  reflectionRecords,
+  reflectionRecordSuccessors,
+  reflectionRecordPayloadRepresentations,
+  sql,
+} from "@nautilo/db";
 import type { GroundedDependencyRecordStatePort } from "./dependency-loss-resolver";
 import { executeTypedRecordProductQuery, recordProductTypedDb, type RecordProductPostgresHandle } from "./product-postgres";
 
@@ -35,6 +44,28 @@ export class PostgresGroundedDependencyRecordState implements GroundedDependency
       .orderBy(asc(reflectionRecordSuccessors.successorRecordId)).limit(input.limit + 1));
     return {status: "available", successorRecordRefs: rows.slice(0, input.limit).map(row => row.successor_record_id),
       complete: rows.length <= input.limit};
+  }
+
+  async readStructuralDependencyRecordRefs(input: {
+    recordRef: string;
+    limit: number;
+  }): ReturnType<NonNullable<GroundedDependencyRecordStatePort["readStructuralDependencyRecordRefs"]>> {
+    const rows = await executeTypedRecordProductQuery(this.handle,
+      recordProductTypedDb.select({
+      dependency_record_ref: sql<string>`${reflectionRecordDependencies.childRecordId}`
+        .as("dependency_record_ref"),
+    }).from(reflectionRecordDependencies).where(eq(
+      reflectionRecordDependencies.parentRecordId,
+      input.recordRef,
+    ))
+        .orderBy(asc(reflectionRecordDependencies.childRecordId))
+        .limit(input.limit + 1));
+    return {
+      status: "available",
+      dependencyRecordRefs: rows.slice(0, input.limit)
+        .map((row) => row.dependency_record_ref),
+      complete: rows.length <= input.limit,
+    };
   }
 
 }

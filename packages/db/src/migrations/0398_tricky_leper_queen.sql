@@ -1,0 +1,1 @@
+CREATE INDEX "idx_llm_usage_operation_id" ON "llm_usage_events" USING hash (("metadata"->>'operationId')) WHERE ("llm_usage_events"."metadata"->>'operationId') IS NOT NULL;

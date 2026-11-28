@@ -134,6 +134,12 @@ describe("backup restore target allowlists", () => {
       expect(DATA_TABLES.indexOf(parent)).toBeLessThan(DATA_TABLES.indexOf("public.memory_review_turns"));
     }
   });
+  test("restores Journal recovery authorizations after their source batches", () => {
+    const journal = DATA_TABLES.indexOf("public.room_journal_batches");
+    const recoveries = DATA_TABLES.indexOf("public.room_journal_model_recoveries");
+    expect(journal).toBeGreaterThanOrEqual(0);
+    expect(recoveries).toBeGreaterThan(journal);
+  });
   test("restore and preflight cover every current Drizzle schema table", () => {
     const schemaTables = collectSchemaTableNames();
 

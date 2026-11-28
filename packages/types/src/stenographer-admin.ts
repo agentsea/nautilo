@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const stenographerErrorCodeSchema = z.enum([
   "provider",
+  "provider_outcome_unknown",
+  "input_authority_unavailable",
   "timeout",
   "invalid_output",
   "input_too_large",
@@ -26,6 +28,8 @@ export const stenographerAdminStatusSchema = z
       })
       .strict(),
     health: z.enum(["healthy", "delayed", "degraded"]),
+    unresolvedProviderOutcomes: nonNegativeInteger.optional(),
+    staleAuthorizedSourceRooms: nonNegativeInteger.optional(),
     current: z
       .object({
         eligibleRooms: nonNegativeInteger,

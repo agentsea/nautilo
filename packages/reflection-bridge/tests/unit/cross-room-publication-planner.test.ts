@@ -57,6 +57,7 @@ function planner(options: Readonly<{
   changedLifecycle?: "current" | "stale";
   changedAuthorityUnavailable?: boolean;
   changedBindingGeneration?: () => number;
+  originPublicationBindingRef?: string;
 }> = {}) {
   const audiences = new Map([
     ["access:a", ["human:alice", "human:bob"]],
@@ -150,7 +151,7 @@ function planner(options: Readonly<{
         const namespace = recordRef === "record:a" ? "access:a" : "publication:b";
         const bindingRef = `journal:namespace:${namespace}:ordinary:v1`;
         return Promise.resolve({
-          originPublicationBindingRef: bindingRef,
+          originPublicationBindingRef: options.originPublicationBindingRef ?? bindingRef,
           currentAccessBindingRefs: [bindingRef],
           representationGeneration: recordRef === "record:a"
             ? options.changedBindingGeneration?.() ?? 1
@@ -442,6 +443,79 @@ describe("exact cross-Room publication planner", () => {
       : coordinate.logicalSourceRef)).toEqual(["record:a", "memory:one"]);
   });
 
+  test("accepts exact revision-zero Memory repair evidence and rejects malformed revisions", async () => {
+    const planForRevision = (observedRevision: string) => {
+      const source = {
+        sourceKind: "memory" as const,
+        logicalSourceRef: "memory:zero",
+        observedRevision,
+        observedContentFingerprint: "fingerprint:memory:zero:0",
+        terminalAuthorityLeafHandle: "namespace:memory",
+        authorityBearing: true,
+      };
+      return planner({ sourceAuthorityHumanRefs: ["human:alice"] }).planDependencyLoss({
+        predecessor: {
+          recordRef: "record:a",
+          lifecycle: "current",
+          structuralHeight: 1,
+          processingGeneration: 1,
+          semantic: {
+            observedContentFingerprint: "fingerprint:record:a",
+            posture: "derived",
+            statement: "Old parent.",
+            sourceDependencies: [source],
+            anchors: [],
+            childRecordRefs: [],
+            producer: { producerRef: "reflection", policyVersion: "v1" },
+            terminalAuthorityLeafHandles: ["namespace:a"],
+          },
+        },
+        proposal: {
+          operation: "supersede_parent",
+          parentRecordRef: "record:a",
+          statement: "Remaining revision-zero source evidence.",
+          childRecordRefs: [],
+          sourceDependencies: [source],
+        },
+        modelExposureDependencies: [{
+          kind: "source",
+          sourceKind: source.sourceKind,
+          logicalSourceRef: source.logicalSourceRef,
+          observedRevision: source.observedRevision,
+          observedContentFingerprint: source.observedContentFingerprint,
+          terminalAuthorityLeafHandle: source.terminalAuthorityLeafHandle,
+        }],
+        idempotencyKey: `sleep-dependency-loss:record:a:memory:${observedRevision}`,
+      });
+    };
+
+    const result = await planForRevision("0");
+    expect(result.status).toBe("planned");
+    if (result.status !== "planned") return;
+    expect(result.plan.selectedInputs[1]).toMatchObject({
+      kind: "source",
+      logicalSourceRef: "memory:zero",
+      contentGeneration: 0,
+      representationGeneration: 1,
+      authorityGeneration: 1,
+    });
+    expect(result.plan.modelExposureDependencies).toEqual([{
+      kind: "source",
+      sourceKind: "memory",
+      logicalSourceRef: "memory:zero",
+      observedRevision: "0",
+      observedContentFingerprint: "fingerprint:memory:zero:0",
+      terminalAuthorityLeafHandle: "namespace:memory",
+    }]);
+
+    for (const observedRevision of ["-1", "00", "0.5", "revision-zero"]) {
+      expect(await planForRevision(observedRevision)).toEqual({
+        status: "unavailable",
+        failureDetail: "publication_plan_invalid",
+      });
+    }
+  });
+
   test("materializes only the selected dependencies' Human intersection", async () => {
     const result = await planner().plan({
       applicationPlanToken: token,
@@ -495,6 +569,28 @@ describe("exact cross-Room publication planner", () => {
     expect(audienceCalls).toEqual([["human:alice"]]);
     expect(result.plan.selectedInputs).toEqual(candidatePlan.inputs);
     expect(result.plan.modelExposureDependencies).toHaveLength(2);
+  });
+
+  test("reopens legacy room-local Memory through its proven origin and retains every exposure", async () => {
+    const read = { namespaceRef: "origin", bindingRef: "journal:namespace:access:a:ordinary:v1" };
+    const memory = { kind: "source" as const, sourceKind: "memory" as const, role: "candidate" as const,
+      logicalSourceRef: "memory:one" as const, contentGeneration: 1, representationGeneration: 2, authorityGeneration: 1, read };
+    const input = {
+      applicationPlanToken: token, candidatePlan: { ...candidatePlan, inputs: [first, memory] },
+      modelExposureDependencies: [
+        { kind: "record" as const, recordRef: first.recordRef, observedProcessingGeneration: 1, terminalAuthorityLeafHandles: ["access:a"] },
+        { kind: "source" as const, sourceKind: "memory", logicalSourceRef: memory.logicalSourceRef, observedRevision: "1",
+          observedContentFingerprint: "fingerprint:one", terminalAuthorityLeafHandle: "origin" },
+      ],
+    };
+    const originPublicationBindingRef = "journal:namespace:origin:ordinary:v1";
+    const result = await planner({ originPublicationBindingRef }).planExposure(input);
+    expect(result.status).toBe("planned");
+    if (result.status !== "planned") throw Error("expected verified origin");
+    expect(result.plan.selectedInputs[1]?.read).toEqual({ namespaceRef: "origin", bindingRef: originPublicationBindingRef });
+    expect(result.plan.modelExposureDependencies).toEqual(input.modelExposureDependencies);
+    expect(await planner().planExposure(input)).toMatchObject({ status: "unavailable", failureDetail: "publication_source_authority_unavailable" });
+    expect(await planner({ originPublicationBindingRef, sourceAuthorityUnavailable: true }).planExposure(input)).toMatchObject({ status: "unavailable" });
   });
 
   test("keeps stale changed Record in the full exposure audience during repair", async () => {

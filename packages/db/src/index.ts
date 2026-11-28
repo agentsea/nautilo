@@ -115,6 +115,7 @@ export {
   asPostgresJsExecutor,
   createPostgresJsBridgeConnection,
   createPostgresJsCanonicalBridgeConnection,
+  createPostgresJsCanonicalBridgeExecutor,
   type PostgresJsBridgeConnection,
   type PostgresJsCanonicalBridgeConnection,
   type PostgresJsCanonicalTransaction,
@@ -400,6 +401,7 @@ export {
 } from "./utils/server-profile-queries";
 export {
   resolveServerModelConfig,
+  getServerModelConfigRow,
   getServerModelConfig,
   upsertServerModelConfig,
   type ResolvedServerModelConfig,
@@ -959,6 +961,10 @@ export {
 } from "./queries/llm-usage";
 export {
   classifyModelAttemptReplaySafety,
+  hasSettledServiceMemoryReview,
+  hasOnlyRefusedServiceAttempts,
+  KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES,
+  resolveFreshCompactionAttemptReplaySafety,
   resolveModelAttemptReplaySafety,
   type ModelAttemptReplayIdentity,
   type ModelAttemptReplaySafety,
@@ -1057,11 +1063,17 @@ export {
   classifyReflectionHealth,
   queryReflectionAdminStatus,
 } from "./queries/reflection-status";
+export {
+  classifyReflectionHeldProviderEvidence,
+  readReflectionRecoveryDiagnostics,
+  type ReflectionRecoveryDiagnostics,
+} from "./queries/reflection-recovery-diagnostics";
 export * from "./queries/codex";
 export * from "./queries/claude-connections";
 export * from "./queries/memory-review";
 
 export * from "./queries/memory-review-status";
+export * from "./queries/room-journal-recovery";
 
 export { shareWorkspaceArtifact, listWorkspaceSharesForHuman } from "./queries/workspace-sharing";
 

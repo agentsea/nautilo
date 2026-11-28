@@ -4,6 +4,7 @@ import { MemoryReviewError } from "@nautilo/agent";
 import { PersonalMemoryEvidenceChangedError } from "@nautilo/reflection-bridge/server";
 import { MEMORY_REVIEW_AUTOMATIC_RETRY_CODES, MEMORY_REVIEW_MANUAL_RETRY_CODES } from "@nautilo/types";
 import { createPersonalMemoryReviewAdmitter } from "../../src/lib/personal-memory-review-funding";
+import { MemoryReviewRecoveryEvidenceChangedError } from "../../src/lib/personal-memory-operation";
 import type { MemoryReviewClaim, MemoryReviewRepository } from "@nautilo/runtime";
 
 const claim: MemoryReviewClaim = {
@@ -29,6 +30,39 @@ async function failure(promise: Promise<unknown>): Promise<unknown> {
 }
 
 describe("personal Memory review funding adapter", () => {
+  test.each(["openai:gpt-4o", "venice:review", "surplus:review"])(
+    "service-funded recovery spends the grant before a failed %s dispatch",
+    async modelId => {
+      const order: string[] = [];
+      const wireError = new Error("provider result unavailable");
+      const controller = new AbortController();
+      const admit = createPersonalMemoryReviewAdmitter({
+        repository: repository(), evidence: {} as never, budget: { maxVisitedRecords: 1, maxTraversalWork: 1 },
+        commitmentKey: new Uint8Array(32).fill(4), resolveServiceModel: () => modelId,
+        resolveExposureDependencies: async () => undefined,
+        openOperation: async () => ({
+          binding: { version: 1, kind: "service", role: "memoryReview", modelId,
+            inputCommitment: `hmac-sha256:${"c".repeat(43)}` },
+          modelId, humanUserId: null, assertCurrent: async () => {}, assertExposure: async () => {},
+        }),
+        invokeChat: async (_messages, _tools, selectedModel, _user, _agent, _lane, config, options) => {
+          expect(selectedModel).toBe(modelId);
+          expect(options?.serverFundedService).toBe("shared_memory_maintenance");
+          expect(config?.signal).toBe(controller.signal);
+          await options?.beforeProviderDispatch?.(config?.signal);
+          order.push("wire");
+          throw wireError;
+        },
+      });
+      const admitted = await admit({ ...claim, modelRecovery: "authorized" }, { messages: [], memoryAccessEnvelope: envelope }, async () => {});
+      const seen = await admitted.invokeModel({ modelId, messages: [], tools: [], signal: controller.signal }, async () => {
+        order.push("spend");
+      }).catch((error: unknown) => error);
+      expect(seen).toBe(wireError);
+      expect(order).toEqual(["spend", "wire"]);
+    },
+  );
+
   test("reports accepted personal evidence loss during admission as unavailable Memory", async () => {
     const admit = createPersonalMemoryReviewAdmitter({
       repository: repository(), evidence: {} as never, budget: { maxVisitedRecords: 1, maxTraversalWork: 1 },
@@ -39,6 +73,19 @@ describe("personal Memory review funding adapter", () => {
 
     expect(await failure(admit(claim, { messages: [], memoryAccessEnvelope: envelope }, async () => {})))
       .toMatchObject({ name: "MemoryReviewError", code: "memory_unavailable" });
+  });
+
+  test("reports a proved manual service rebind mismatch as changed source evidence", async () => {
+    const admit = createPersonalMemoryReviewAdmitter({
+      repository: repository(), evidence: {} as never, budget: { maxVisitedRecords: 1, maxTraversalWork: 1 },
+      commitmentKey: new Uint8Array(32).fill(3), resolveServiceModel: () => "service-model",
+      resolveExposureDependencies: async () => undefined,
+      openOperation: async () => { throw new MemoryReviewRecoveryEvidenceChangedError(); },
+    });
+
+    expect(await failure(admit({ ...claim, modelRecovery: "authorized" },
+      { messages: [], memoryAccessEnvelope: envelope }, async () => {})))
+      .toMatchObject({ name: "MemoryReviewError", code: "source_changed" });
   });
 
   test("reports a current-evidence funding fence before model dispatch as unavailable Memory", async () => {

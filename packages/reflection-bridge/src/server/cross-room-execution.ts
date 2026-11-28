@@ -416,7 +416,14 @@ function assertInputCoordinate(
       || !Number.isSafeInteger(input.contentGeneration) || input.contentGeneration < 0
       || input.crossRoomFence !== undefined) throw new TypeError("Invalid exact Message support coordinate");
   } else {
-    assertPositiveSafeInteger("cross-Room source content generation", input.contentGeneration);
+    if (
+      !Number.isSafeInteger(input.contentGeneration)
+      || input.contentGeneration < 0
+    ) {
+      throw new TypeError(
+        "cross-Room source content generation must be a nonnegative safe integer",
+      );
+    }
   }
   if (input.crossRoomFence !== undefined) {
     const fence = input.crossRoomFence;
@@ -427,10 +434,14 @@ function assertInputCoordinate(
     if (input.logicalSourceRef !== `memory:${fence.memoryRef}`) {
       throw new TypeError("cross-Room source logical reference does not match Memory");
     }
-    assertPositiveSafeInteger(
-      "cross-Room source embedding revision",
-      fence.embeddingRevision,
-    );
+    if (
+      !Number.isSafeInteger(fence.embeddingRevision)
+      || fence.embeddingRevision < 0
+    ) {
+      throw new TypeError(
+        "cross-Room source embedding revision must be a nonnegative safe integer",
+      );
+    }
     if (
       fence.embeddingRevision !== input.contentGeneration
       || !Number.isFinite(new Date(fence.updatedAtCoordinate).getTime())
@@ -484,6 +495,11 @@ function assertInputCoordinate(
         "cross-Room source protected object",
         fence.protectedObjectId,
       );
+      if (fence.embeddingRevision < 1) {
+        throw new TypeError(
+          "cross-Room protected source embedding revision must be positive",
+        );
+      }
       if (
         !Number.isSafeInteger(fence.protectedAccessRevision)
         || fence.protectedAccessRevision! < 0

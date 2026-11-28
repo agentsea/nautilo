@@ -13,6 +13,7 @@ import {
 import type {
   ChatSearchOptions,
   ChatSearchValidationError,
+  MemoryRecoveryRun,
   RoomMessageSearchOptions,
   RoomMessageSearchValidationError,
 } from "@nautilo/types";
@@ -43,6 +44,26 @@ describe("NautiloApiClient HTTP contracts (mocked fetch)", () => {
 
   afterEach(() => {
     globalThis.fetch = realFetch;
+  });
+
+  test("memory recovery sends one server-wide authorization and reads back the latest admission", async () => {
+    const requestId = "11111111-1111-4111-8111-111111111111";
+    const run: MemoryRecoveryRun = { requestId, observedThrough: "2026-11-27T10:00:00Z",
+      stenographer: { state: "assessed", queued: 2, held: 0 }, memory: { state: "paused" }, reflection: null };
+    const requests: Array<{ method: string; path: string; body: RequestInit["body"] }> = [];
+    const mockFetch = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      requests.push({ method, path: new URL(requestUrl(input)).pathname, body: init?.body });
+      return Response.json(method === "GET" ? { run } : run);
+    };
+    globalThis.fetch = Object.assign(mockFetch, { preconnect: realFetch.preconnect.bind(realFetch) });
+    const client = new NautiloApiClient("http://127.0.0.1:9");
+    expect(await client.admin.memoryRecovery.latest()).toEqual({ run });
+    expect(await client.admin.memoryRecovery.run(requestId)).toEqual(run);
+    expect(requests.map(({ method, path }) => [method, path])).toEqual([
+      ["GET", "/api/admin/memory-recovery"], ["POST", "/api/admin/memory-recovery"],
+    ]);
+    expect(requests[1]?.body).toBe(JSON.stringify({ requestId, confirmBillableRerun: true }));
   });
 
   test("getJobStatus — builds GET /api/jobs/:id with auth header", async () => {

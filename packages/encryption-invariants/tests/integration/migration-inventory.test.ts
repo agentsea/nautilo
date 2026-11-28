@@ -34,6 +34,8 @@ const TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION = [
   "public.foreground_memory_crypto_publication_receipts",
   "public.group_moderation_scopes",
   "public.message_deletion_receipts",
+  "public.memory_recovery_runs",
+  "public.memory_review_model_recoveries",
   "public.moderation_actions",
   "public.moderation_restrictions",
   "public.moderation_subjects",
@@ -43,6 +45,7 @@ const TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION = [
   "public.protected_task_execution_segment_receipts",
   "public.protected_task_run_output_bindings",
   "public.protected_task_wake_continuation_receipts",
+  "public.room_journal_model_recoveries",
   "public.server_admission",
   "public.server_moderation_policy",
   "public.server_provider_policy",
@@ -162,6 +165,26 @@ const IMMUTABLE_EXTERNAL_OPERATOR_MIGRATION_MANIFEST = [
     sha256: "80ff376b15d59816d08f95ef96733ab27e9f59abf8aed12daf80febbf755d091",
   },
 ] as const;
+
+const IMMUTABLE_MEMORY_RECOVERY_MIGRATION_MANIFEST = [
+  {
+    path: "0387_eminent_absorbing_man.sql",
+    sha256: "44d2c0041ce99a34e63733f9baba894d976b8f58ccff371e6eef56a2dcf55a72",
+  },
+  {
+    path: "0388_acoustic_lester.sql",
+    sha256: "25e107928a7960016bf5d97f25f311d10dff8e58b948a5ca50942fd5163a82ef",
+  },
+  {
+    path: "0389_memory_review_model_recovery_privileges.sql",
+    sha256: "2adf4e7c773b177daf414a6a44d92788c4b43207918578620dd776394ffde1f4",
+  },
+] as const;
+
+const IMMUTABLE_WAKE_FK_PERMISSION_MIGRATION = {
+  path: "0390_protected_task_wake_continuation_fk_permissions.sql",
+  sha256: "7d4b232cc874788a3d5932e2026b09df91c7819fcc74cdc1770ca4f4972f0ce0",
+} as const;
 
 function temporaryMigrationTree(name: string): string {
   const directory = mkdtempSync(resolve(tmpdir(), `m220 ${name} `));
@@ -293,11 +316,11 @@ describe("migration inventory", () => {
     expect(inventory.missingSnapshotIndices).toContain(6);
     expect(inventory.missingSnapshotIndices).toContain(118);
     expect(inventory.latestSnapshotIndex).toBe(MIGRATION_TREE_BASELINE.tip);
-    expect(inventory.currentTables).toHaveLength(241);
+    expect(inventory.currentTables).toHaveLength(244);
     const currentTableLocators = new Set(
       inventory.currentTables.map((table) => table.locator),
     );
-    expect(TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION).toHaveLength(29);
+    expect(TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION).toHaveLength(32);
     for (const locator of TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION) {
       expect(currentTableLocators).toContain(locator);
     }
@@ -308,8 +331,8 @@ describe("migration inventory", () => {
       schema: "public",
       name: "session_messages",
     });
-    expect(inventory.currentColumns).toHaveLength(3310);
-    expect(inventory.currentConstraints).toHaveLength(936);
+    expect(inventory.currentColumns).toHaveLength(3355);
+    expect(inventory.currentConstraints).toHaveLength(943);
     expect(inventory.currentConstraints).toContainEqual({
       locator: "public.actors#foreign_key:actors_owner_id_users_id_fk",
       tableLocator: "public.actors",
@@ -321,7 +344,7 @@ describe("migration inventory", () => {
       onDelete: "cascade",
       onUpdate: "no action",
     });
-    expect(inventory.historicalCreatedTables).toHaveLength(257);
+    expect(inventory.historicalCreatedTables).toHaveLength(260);
     expect(inventory.historicalDroppedTables).toEqual([
       "public.collaboration_sessions",
       "public.grant_domain_envelope_acknowledgements",
@@ -510,12 +533,21 @@ describe("migration inventory", () => {
     ]);
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
-    expect(inventory.migrations.at(-1)).toEqual({
-      index: 385,
-      tag: "0385_operator_control_archive_cascade",
-      path: "0385_operator_control_archive_cascade.sql",
-      sha256: "80ff376b15d59816d08f95ef96733ab27e9f59abf8aed12daf80febbf755d091",
-    });
+    expect(inventory.migrations.slice(391).map(({ path, sha256 }) => ({ path, sha256 }))).toEqual([
+      { path: "0391_memory_review_receipt_write_authority.sql", sha256: "1465d7c93e205323d6b61306a9d99e0b32f120930edb7b4661ebbc695d01da77" },
+      { path: "0392_flaky_spencer_smythe.sql", sha256: "22ffc8f0d9fc59c6c63386f395b240dd874d75c90f6f0adb783ee03e7427de56" },
+      { path: "0393_past_shocker.sql", sha256: "4129a4432c0e224827f8034921544dbc9faff127ebfbf676646c2f80e2b60007" },
+      { path: "0394_absurd_young_avengers.sql", sha256: "978a13f89a637a05ea1fbb05f83085c11038b5dbc7a6c88d327454bcce13574a" },
+      { path: "0395_big_blizzard.sql", sha256: "02184ee600e44d98c3703a97f0e91a458b82e52b56ab38d5f47690d73c2edc6c" },
+      { path: "0396_wise_apocalypse.sql", sha256: "ef342a61cec17bcd8ee32f3ef0c72b75e75ec0a8dd2a9541f12ccb394b97bac3" },
+      { path: "0397_dry_mikhail_rasputin.sql", sha256: "0fcac8081329c323f78be0c225db20694779c3154072faef91993c0640a9dcd5" },
+      { path: "0398_tricky_leper_queen.sql", sha256: "f0bf750a6bfd9799b2200dc9fb6b7648a7bf0b00a58cf765d3c430f79bf771b2" },
+      { path: "0399_thick_madame_masque.sql", sha256: "54e24cdc36fab0174054e43552849cd9022c8aaba78ba190ca1b0e3a572b7932" },
+      { path: "0400_curious_professor_monster.sql", sha256: "37b81025441248afda5aee03369737d8774774b6141334a3260683b4c0db1468" },
+      { path: "0401_fearless_giant_girl.sql", sha256: "c7017122e7825da9754778c73985182b1d2deccf69495a96bf18421fa5a0ed81" },
+      { path: "0402_romantic_frightful_four.sql", sha256: "b3e4a9df3482257f8e6453a5de512411bbbb1538e667400a56c2924f84908323" },
+      { path: "0403_brainy_puppet_master.sql", sha256: "85bd41418f7a63dfd9a6868e7bd281057940ccbfa076da8e177ce2c7a86368da" },
+    ]);
 
     const comparison = compareSchemaAndMigrationInventory(
       inventoryDrizzleSchema(nautiloSchema),
@@ -557,9 +589,30 @@ describe("migration inventory", () => {
       path: migration.path,
       sha256: migration.sha256,
     }))).toEqual([...IMMUTABLE_EXTERNAL_OPERATOR_MIGRATION_MANIFEST]);
-    expect(inventory.migrations.at(-1)).toMatchObject({
+    expect(inventory.migrations[385]).toMatchObject({
       index: 385,
       tag: "0385_operator_control_archive_cascade",
+    });
+  });
+
+  test("pins the Memory recovery, failure-vocabulary, and privilege migrations without a DB", () => {
+    const directory = resolve(import.meta.dir, "../../../db/src/migrations");
+    const inventory = inventoryMigrationTree(directory);
+
+    expect(inventory.migrations.slice(387, 390).map((migration) => ({
+      path: migration.path,
+      sha256: migration.sha256,
+    }))).toEqual([...IMMUTABLE_MEMORY_RECOVERY_MIGRATION_MANIFEST]);
+  });
+
+  test("pins the protected Task wake-continuation FK permission without a DB", () => {
+    const directory = resolve(import.meta.dir, "../../../db/src/migrations");
+    const inventory = inventoryMigrationTree(directory);
+
+    expect(inventory.migrations[390]).toMatchObject({
+      index: 390,
+      tag: "0390_protected_task_wake_continuation_fk_permissions",
+      ...IMMUTABLE_WAKE_FK_PERMISSION_MIGRATION,
     });
   });
 

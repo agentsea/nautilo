@@ -599,6 +599,37 @@ describe("personal Memory evidence source port", () => {
     expect(lostSelectedEdge).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
   });
 
+  test("admits exact revision-zero Memory as current service-funded evidence", async () => {
+    const fingerprints = createHmacOrdinarySourceFingerprintPort(new Uint8Array(32).fill(7));
+    const memory = {
+      id: MEMORY_ID, type: "fact", content: "Imported Memory",
+      contentRevision: 0, modelExposureDependencies: [{
+        kind: "source", sourceKind: "message", logicalSourceRef: "message:41",
+        observedRevision: "1", observedContentFingerprint: "sha256:fixture",
+        terminalAuthorityLeafHandle: NAMESPACE_ID,
+      }],
+    };
+    const dependency = sourceDependency({
+      sourceKind: "memory", logicalSourceRef: `memory:${MEMORY_ID}`,
+      revision: "0", fingerprint: fingerprints.memory(memory),
+    });
+    const classify = (db: DirectDatabase) => classifyPersonalMemoryEvidence({
+      dependencies: [dependency], ports: port({ db, fingerprints }),
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+    });
+    expect(await classify(database(
+      [ACTOR_ROW], [memory], [{ namespaceId: NAMESPACE_ID, selectedNamespacePresent: true }],
+    ))).toEqual({ kind: "service", reason: "incomplete" });
+    const changed = await classify(database(
+      [ACTOR_ROW], [{ ...memory, content: "Changed without a matching fingerprint" }],
+    )).catch((error: unknown) => error);
+    expect(changed).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+    const detached = await classify(database(
+      [ACTOR_ROW], [memory], [{ namespaceId: SHARED_NAMESPACE_ID, selectedNamespacePresent: false }],
+    )).catch((error: unknown) => error);
+    expect(detached).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+  });
+
   test("keeps changed, missing, corrupted, unauthorized, and failed Memory reads fatal", async () => {
     const fingerprints = createHmacOrdinarySourceFingerprintPort(
       new Uint8Array(32).fill(7),

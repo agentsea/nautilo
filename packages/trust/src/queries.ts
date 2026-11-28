@@ -49,6 +49,7 @@ import {
   reconcileRoomJournalMembershipInTx,
   namespaceSubsetPredicate,
   privateNamespaceBoundarySql,
+  type DirectDatabase,
 } from "@nautilo/db";
 import { composeFederatedId, getServerHostname } from "@nautilo/config";
 import type { MemoryAccessEnvelope } from "./types";
@@ -598,8 +599,25 @@ export async function getRoomWithAccess(
   isPublicNamespaceBoundary: boolean;
   externalContext?: boolean;
 } | null> {
+  return getRoomWithAccessWith(
+    getSharedDirectDb(),
+    roomId,
+    requesterActorId,
+  );
+}
+
+/** Transaction-bound form used when audience proof shares a caller's fence. */
+export async function getRoomWithAccessWith(
+  db: Pick<DirectDatabase, "select">,
+  roomId: string,
+  requesterActorId?: string,
+): Promise<{
+  namespaceId: string;
+  humanActorIds: string[];
+  isPublicNamespaceBoundary: boolean;
+  externalContext?: boolean;
+} | null> {
   if (!roomId) return null;
-  const db = getSharedDirectDb();
   const boundary = createNamespaceBoundaryProjection();
   const [row] = await db
     .select({
@@ -955,8 +973,15 @@ export async function findRecordAccessRoomByExactHumanActorSet(
 export async function findRoomByNamespaceId(
   namespaceId: string,
 ): Promise<{ roomId: string; label: string; humanActorIds: string[] } | null> {
+  return findRoomByNamespaceIdWith(getSharedDirectDb(), namespaceId);
+}
+
+/** Transaction-bound reverse Namespace lookup for canonical evidence reads. */
+export async function findRoomByNamespaceIdWith(
+  db: Pick<DirectDatabase, "select">,
+  namespaceId: string,
+): Promise<{ roomId: string; label: string; humanActorIds: string[] } | null> {
   if (!namespaceId) return null;
-  const db = getSharedDirectDb();
   const [row] = await db
     .select({
       roomId: rooms.id,

@@ -345,6 +345,43 @@ describe("StenographerWorker intent scheduling", () => {
 });
 
 describe("ordinary Stenographer intent adapter", () => {
+  test("records delayed invalid output at completion time by default", async () => {
+    const claimTime = new Date(Date.now() - 1_000);
+    let dispatchCompletedAt: Date | undefined;
+    let failedAt: Date | undefined;
+    const adapter = createOrdinaryStenographerIntentAdapter({
+      claimExtraction: async () => claim(),
+      createInvoker: () => async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        dispatchCompletedAt = new Date();
+        return "malformed";
+      },
+      publishExtraction: async () => ({ published: true, eventsWritten: 0 }),
+      failExtraction: async (input) => {
+        expect(input.errorCode).toBe("invalid_output");
+        failedAt = input.now;
+      },
+      logger: silentLogger(),
+    });
+
+    const prepared = await adapter.prepareExtraction({
+      roomId: "room-1",
+      lane: "live",
+      modelId: "model",
+      now: claimTime,
+      signal: new AbortController().signal,
+    });
+
+    expect(await prepared.publish({ revalidationToken: 1 }))
+      .toMatchObject({ status: "failed", processed: true });
+    expect(dispatchCompletedAt).toBeInstanceOf(Date);
+    expect(failedAt).toBeInstanceOf(Date);
+    expect(failedAt!.getTime()).toBeGreaterThanOrEqual(
+      dispatchCompletedAt!.getTime(),
+    );
+    expect(failedAt!.getTime()).toBeGreaterThan(claimTime.getTime());
+  });
+
   test("claims, opens the complete claim, invokes and publishes once", async () => {
     let invocations = 0;
     let publications = 0;

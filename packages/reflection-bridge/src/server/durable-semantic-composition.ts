@@ -223,6 +223,7 @@ export type CrossRoomOrganizerAugmentationResult =
       candidates: readonly OrganizerRecordInput[];
       existingParents: readonly OrganizerRecordInput[];
       applicationPlanToken: CrossRoomApplicationPlanToken;
+      batchCoordinates?: ReadonlyMap<string, string>;
       unsupportedAuthorityShapes: number;
       authorityParentsResolved: number;
       authorityParentsSkipped: number;
@@ -308,7 +309,13 @@ export interface CrossRoomOrganizerPartitionPort {
 
 export type GroundedDependencyLossDecision =
   | { readonly status: "stable" }
-  | { readonly status: "unavailable" }
+  | { readonly status: "invalid_model_output" }
+  | Readonly<{
+      status: "unavailable";
+      evidence?: Readonly<{
+        kind: "dependency_cycle";
+      }>;
+    }>
   | { readonly status: "total_loss" }
   | Readonly<{
       status: "partial_loss";
@@ -361,8 +368,10 @@ function recordInput(
 export class SameRoomDurableSemanticComposition
 implements DurableSleepSemanticPort {
   readonly openOrganizationAttempt?: NonNullable<DurableSleepSemanticPort["openOrganizationAttempt"]>;
+  readonly organizerCheckpoints?: NonNullable<DurableSleepSemanticPort["organizerCheckpoints"]>;
   constructor(private readonly ports: Readonly<{
     openOrganizationAttempt?: NonNullable<DurableSleepSemanticPort["openOrganizationAttempt"]>;
+    organizerCheckpoints?: NonNullable<DurableSleepSemanticPort["organizerCheckpoints"]>;
     repository: DurableRecordReadPort;
     readiness: DurableSemanticReadinessPort;
     bindings: SameRoomSemanticBindingPort;
@@ -377,6 +386,7 @@ implements DurableSleepSemanticPort {
     now?: () => number;
   }>) {
     if (ports.openOrganizationAttempt) this.openOrganizationAttempt = ports.openOrganizationAttempt;
+    if (ports.organizerCheckpoints) this.organizerCheckpoints = ports.organizerCheckpoints;
   }
 
   resolveParentConflict(input: Readonly<{
@@ -572,6 +582,7 @@ implements DurableSleepSemanticPort {
     }
 
     let applicationPlanToken: CrossRoomApplicationPlanToken | undefined;
+    let batchCoordinates: ReadonlyMap<string, string> | undefined;
     let modelExposureDependencies:
       | readonly DurableModelExposureDependency[]
       | undefined;
@@ -586,8 +597,10 @@ implements DurableSleepSemanticPort {
     let crossRoomElapsedMs = 0;
     if (this.ports.crossRoom !== undefined) {
       const crossRoomStartedAt = now();
-      const namespaceFromBinding = /^journal:namespace:([^:]+):/u
-        .exec(binding.readBindingRef)?.[1]
+      const namespacePattern = /^journal:namespace:([^:]+):/u;
+      const accessNamespace = namespacePattern.exec(binding.readBindingRef)?.[1];
+      const originNamespace = namespacePattern.exec(binding.publicationBindingRef)?.[1];
+      const namespaceFromBinding = accessNamespace
         ?? changed.record.semantic.terminalAuthorityLeafHandles[0]
         ?? binding.roomAnchorRef;
       const selectedRecordCoordinates = new Map([
@@ -614,6 +627,15 @@ implements DurableSleepSemanticPort {
         } else if (entry.dependency?.kind === "source") {
           const revision = Number(entry.dependency.dependency.observedRevision ?? 0);
           if (!Number.isSafeInteger(revision) || revision < 0) continue;
+          // Room-local Memory was opened in the origin Room. A derived
+          // record can be readable through a different access Namespace.
+          const leaf = entry.dependency.dependency.terminalAuthorityLeafHandle;
+          const sourceBinding = originNamespace === leaf
+            ? binding.publicationBindingRef
+            : binding.readBindingRef;
+          if (originNamespace !== leaf && accessNamespace !== undefined && accessNamespace !== leaf) {
+            return { status: "unavailable", failureCode: "candidate_unavailable", failureDetail: "candidate_fence_stale" };
+          }
           sameRoomPlanInputs.push({
             kind: "source",
             sourceKind: "memory",
@@ -623,9 +645,8 @@ implements DurableSleepSemanticPort {
             representationGeneration: revision + 1,
             authorityGeneration: 1,
             read: {
-              namespaceRef:
-                entry.dependency.dependency.terminalAuthorityLeafHandle,
-              bindingRef: binding.readBindingRef,
+              namespaceRef: leaf,
+              bindingRef: sourceBinding,
             },
           });
         }
@@ -715,6 +736,7 @@ implements DurableSleepSemanticPort {
         existingParents.push({ ...entry, handle: `P${existingParents.length + 1}` });
       }
       applicationPlanToken = augmented.applicationPlanToken;
+      batchCoordinates = augmented.batchCoordinates;
       modelExposureDependencies = this.ports.crossRoom
         .readModelExposureDependencies?.(applicationPlanToken);
       unsupportedAuthorityShapes = augmented.unsupportedAuthorityShapes;
@@ -729,6 +751,7 @@ implements DurableSleepSemanticPort {
         changed: recordInput("R1", changed.record),
         candidates,
         existingParents,
+        ...(batchCoordinates === undefined ? {} : { batchCoordinates }),
         maxSelectedChildren: applicationPlanToken === undefined
           ? CANDIDATE_POLICY_V1.sameRoomBound
           : CANDIDATE_POLICY_V1.sameRoomBound + CANDIDATE_POLICY_V1.crossRoomBound,
@@ -820,8 +843,17 @@ implements DurableSleepSemanticPort {
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     if (loss.status === "stable") return { status: "not_applicable" };
+    if (loss.status === "invalid_model_output") {
+      return { status: "unavailable", failureCode: "invalid_model_output" };
+    }
     if (loss.status === "unavailable") {
-      return { status: "unavailable", failureCode: "candidate_unavailable" };
+      return {
+        status: "unavailable",
+        failureCode: "candidate_unavailable",
+        ...(loss.evidence?.kind === "dependency_cycle"
+          ? { failureDetail: "candidate_selection_invalid" as const }
+          : {}),
+      };
     }
     const proposal = loss.status === "total_loss"
       ? {

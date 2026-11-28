@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
+import { convertResponsesMessageToAIMessage } from "@langchain/openai";
 import { getUsageContext } from "../../src/usage/usage-context";
 import { setConfigOverrides } from "@nautilo/config";
 import { createMemoryReviewStaging, type MemoryReviewStagingPorts } from "../../src/memory/memory-review-staging";
@@ -47,6 +48,32 @@ function memory(id = "memory-1", content = "Original fact"): MemoryDetail & {
     demotedFrom: null, namespaceIds: ["ns"],
   };
 }
+function responsesMessage(value: unknown): Parameters<typeof convertResponsesMessageToAIMessage>[0] {
+  return value as Parameters<typeof convertResponsesMessageToAIMessage>[0];
+}
+function openAINoChangeResponse(extraOutput: unknown[] = []) {
+  return convertResponsesMessageToAIMessage(responsesMessage({
+    id: "resp_memory_review",
+    object: "response",
+    status: "completed",
+    model: "gpt-5.5",
+    output: [
+      {
+        type: "reasoning",
+        id: "rs_memory_review",
+        summary: [{ type: "summary_text", text: "The conversation adds no durable memory." }],
+      },
+      ...extraOutput,
+      {
+        type: "message",
+        id: "msg_memory_review",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Nothing to save.", annotations: [] }],
+      },
+    ],
+  }));
+}
 describe("Memory transform completion", () => {
   test("reviews complete supplied assistant and tool evidence, with stable staged writes", async () => {
     setup();
@@ -70,10 +97,223 @@ describe("Memory transform completion", () => {
   test("only explicit successful no-change completes an empty proposal", async () => {
     setup();
     const options = { workId: "work", modelId: "model", memoryAccessEnvelope: envelope };
-    const good = await prepareMemoryReview([], { ...options, invokeModel: model([new AIMessage("Nothing to save.")]) });
-    expect(good.status).toBe("prepared");
-    if (good.status === "prepared") expect(good.proposal.operations).toEqual([]);
-    expect(await prepareMemoryReview([], { ...options, invokeModel: model([new AIMessage("")]) })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+    for (const response of [
+      new AIMessage("Nothing to save."),
+      new AIMessage({ content: [{ type: "text" as const, text: "Nothing to save." }] }),
+      // Installed @langchain/anthropic streaming aggregation retains adaptive
+      // thinking beside the visible text in the AIMessage content array.
+      new AIMessage({
+        content: [
+          { type: "thinking", thinking: "private reasoning", signature: "provider-signature", index: 0 },
+          { type: "text", text: "Nothing to save.", index: 1 },
+        ],
+        response_metadata: { model_provider: "anthropic" },
+      }),
+      new AIMessage({
+        content: [
+          { type: "redacted_thinking", data: "opaque-provider-data", index: 0 },
+          { type: "text", text: "Nothing to save.", index: 1 },
+        ],
+        response_metadata: { model_provider: "anthropic" },
+      }),
+      // The pinned @langchain/openai Responses converter retains the private
+      // reasoning summary beside the single visible text block.
+      openAINoChangeResponse(),
+    ]) {
+      const result = await prepareMemoryReview([], {
+        ...options,
+        invokeModel: model([response]),
+      });
+      expect(result.status).toBe("prepared");
+      if (result.status === "prepared") expect(result.proposal.operations).toEqual([]);
+    }
+  });
+  test("accepts the pinned OpenAI Responses no-change envelope after model routing", async () => {
+    setup();
+    for (const modelId of ["openai:gpt-5.5", "configured-routed-model"]) {
+      const result = await prepareMemoryReview([], {
+        workId: `work-${modelId}`,
+        modelId,
+        memoryAccessEnvelope: envelope,
+        invokeModel: model([openAINoChangeResponse()]),
+      });
+      expect(result.status).toBe("prepared");
+      if (result.status === "prepared") expect(result.proposal.operations).toEqual([]);
+    }
+  });
+  test("keeps Venice and Surplus chat-completion no-change responses provider-neutral", async () => {
+    setup();
+    const options = { workId: "work", modelId: "model", memoryAccessEnvelope: envelope };
+    for (const response of [
+      new AIMessage({
+        content: [{ type: "text", text: "Nothing to save." }],
+        additional_kwargs: { reasoning_content: "private Venice reasoning" },
+        response_metadata: { model_provider: "openai", model_name: "venice-model" },
+      }),
+      new AIMessage({
+        content: [{ type: "text", text: "Nothing to save." }],
+        additional_kwargs: { reasoning: "private Surplus reasoning" },
+        response_metadata: { model_provider: "openai", model_name: "surplus-model", finish_reason: "stop" },
+      }),
+    ]) {
+      const result = await prepareMemoryReview([], {
+        ...options,
+        invokeModel: model([response]),
+      });
+      expect(result.status).toBe("prepared");
+      if (result.status === "prepared") expect(result.proposal.operations).toEqual([]);
+    }
+  });
+  test("rejects malformed, extra, non-text, and invalid-call no-change responses", async () => {
+    setup();
+    const options = { workId: "work", modelId: "model", memoryAccessEnvelope: envelope };
+    const invalidContents = [
+      "",
+      [],
+      [{ type: "text" as const, text: "" }],
+      [{ type: "text" as const, text: "Nothing to save." }, { type: "text" as const, text: "Extra" }],
+      [{ type: "image_url" as const, image_url: { url: "data:image/png;base64," } }],
+      [{ type: "text" as const, text: 42 }],
+      [{ type: "thinking", thinking: "reasoning", signature: "provider-signature" }],
+    ];
+    for (const content of invalidContents) {
+      const result = await prepareMemoryReview([], {
+        ...options,
+        invokeModel: model([new AIMessage({ content: content as BaseMessage["content"] })]),
+      });
+      expect(result).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+    }
+    for (const response of [
+      // Reasoning is never itself an explicit no-change decision.
+      new AIMessage({
+        content: [{ type: "thinking", thinking: "Nothing to save.", signature: "provider-signature" }],
+        response_metadata: { model_provider: "anthropic" },
+      }),
+      // Extra visible/provider content remains invalid even when the sentinel
+      // and a valid private Anthropic envelope are both present.
+      new AIMessage({
+        content: [
+          { type: "thinking", thinking: "private reasoning", signature: "provider-signature" },
+          { type: "text", text: "Nothing to save." },
+          { type: "image_url", image_url: { url: "data:image/png;base64," } },
+        ],
+        response_metadata: { model_provider: "anthropic" },
+      }),
+      // Identical-looking blocks from another adapter are not granted the
+      // Anthropic provider-envelope exception.
+      new AIMessage({
+        content: [
+          { type: "thinking", thinking: "private reasoning", signature: "provider-signature" },
+          { type: "text", text: "Nothing to save." },
+        ],
+        response_metadata: { model_provider: "openai" },
+      }),
+      // A malformed Anthropic reasoning block cannot be hidden from strict
+      // visible-content validation.
+      new AIMessage({
+        content: [
+          { type: "thinking", thinking: "private reasoning" },
+          { type: "text", text: "Nothing to save." },
+        ],
+        response_metadata: { model_provider: "anthropic" },
+      }),
+      // OpenAI-compatible Chat Completions responses from Venice and Surplus
+      // share LangChain's provider marker but not its Responses envelope.
+      new AIMessage({
+        content: [
+          { type: "reasoning", reasoning: "private Venice reasoning" },
+          { type: "text", text: "Nothing to save." },
+        ],
+        additional_kwargs: { reasoning_content: "private Venice reasoning" },
+        response_metadata: { model_provider: "openai", model_name: "venice-model" },
+      }),
+      new AIMessage({
+        content: [
+          { type: "reasoning", reasoning: "private Surplus reasoning" },
+          { type: "text", text: "Nothing to save." },
+        ],
+        additional_kwargs: { reasoning: "private Surplus reasoning" },
+        response_metadata: { model_provider: "openai", model_name: "surplus-model", finish_reason: "stop" },
+      }),
+      // A Responses-looking block is not authenticated without the matching
+      // completed raw reasoning envelope emitted by the pinned converter.
+      new AIMessage({
+        content: [
+          { type: "reasoning", reasoning: "private reasoning" },
+          { type: "text", text: "Nothing to save." },
+        ],
+        response_metadata: { model_provider: "openai", object: "response", status: "completed" },
+      }),
+    ]) {
+      expect(await prepareMemoryReview([], {
+        ...options,
+        invokeModel: model([response]),
+      })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+    }
+    expect(await prepareMemoryReview([], {
+      ...options,
+      invokeModel: model([new AIMessage({
+        content: [{ type: "text", text: "Nothing to save." }],
+        invalid_tool_calls: [{ name: "manage_memory", args: "{", error: "invalid" }],
+      })]),
+    })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+  });
+  test("rejects reasoning-only, malformed, arbitrary, and multi-text OpenAI Responses decisions", async () => {
+    setup();
+    const options = { workId: "work", modelId: "openai:gpt-5.5", memoryAccessEnvelope: envelope };
+    const reasoningOnly = openAINoChangeResponse();
+    reasoningOnly.content = reasoningOnly.content.slice(0, 1);
+    const malformed = openAINoChangeResponse();
+    malformed.content = [
+      { type: "reasoning", reasoning: 42 },
+      { type: "text", text: "Nothing to save." },
+    ];
+    const arbitrary = openAINoChangeResponse();
+    arbitrary.content = [
+      ...(arbitrary.content as Exclude<BaseMessage["content"], string>),
+      { type: "image_url", image_url: { url: "data:image/png;base64," } },
+    ];
+    const arbitraryProviderOutput = openAINoChangeResponse([{
+      type: "web_search_call", id: "search_memory_review", status: "completed",
+    }]);
+    const duplicateReasoning = openAINoChangeResponse();
+    const blocks = duplicateReasoning.content as Exclude<BaseMessage["content"], string>;
+    duplicateReasoning.content = [blocks[0]!, ...blocks];
+    const multipleText = openAINoChangeResponse();
+    multipleText.content = [
+      ...(multipleText.content as Exclude<BaseMessage["content"], string>),
+      { type: "text", text: "Extra" },
+    ];
+    for (const response of [
+      reasoningOnly, malformed, arbitrary, arbitraryProviderOutput, duplicateReasoning, multipleText,
+    ]) {
+      expect(await prepareMemoryReview([], {
+        ...options,
+        invokeModel: model([response]),
+      })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+    }
+  });
+  test("Anthropic private reasoning does not displace strict tool-call completion", async () => {
+    setup();
+    const result = await prepareMemoryReview([], {
+      workId: "work", modelId: "model", memoryAccessEnvelope: envelope,
+      invokeModel: model([
+        new AIMessage({
+          content: [{ type: "thinking", thinking: "private reasoning", signature: "provider-signature" }],
+          tool_calls: [{ name: "manage_memory", args: { action: "save", content: "Fact" } }],
+          response_metadata: { model_provider: "anthropic" },
+        }),
+        new AIMessage({
+          content: [
+            { type: "thinking", thinking: "private reasoning", signature: "provider-signature" },
+            { type: "text", text: "Done." },
+          ],
+          response_metadata: { model_provider: "anthropic" },
+        }),
+      ]),
+    });
+    expect(result.status).toBe("prepared");
+    if (result.status === "prepared") expect(result.proposal.operations).toHaveLength(1);
   });
   test("reports content-free exposure before the next paid call and publication", async () => {
     setup();

@@ -54,6 +54,8 @@ export interface SurplusChatAttemptInput {
   readonly validateResponse?: (response: AIMessage) => void;
   /** Optional live authority fence, evaluated after admission and immediately before provider work. */
   readonly assertStillAuthorized?: () => void | Promise<void>;
+  /** Optional one-shot mutation after the final pure authority/cancellation fence. */
+  readonly beforeProviderDispatch?: () => void | Promise<void>;
   /** Narrow service callers may retry direct only after a proven pre-service refusal. */
   readonly directFallbackPolicy?: "pre_service_only";
 }
@@ -463,6 +465,10 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
       authorizationGuardEntered = true;
       await input.assertStillAuthorized();
       input.config.signal?.throwIfAborted();
+    }
+    if (input.beforeProviderDispatch) {
+      authorizationGuardEntered = true;
+      await input.beforeProviderDispatch();
     }
     invocationEntered = true;
     const response = await input.invokeModel(

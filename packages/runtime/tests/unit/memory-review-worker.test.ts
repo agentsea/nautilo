@@ -145,6 +145,101 @@ describe("durable Memory review worker", () => {
     expect(failures[0]).toMatchObject({ phase: "model", reason: "iteration_exhausted" });
   });
 
+  test("one authorized recovery does not schedule ordinary retry even after a transient model failure", async () => {
+    const { deps, events, failures } = fixture();
+    deps.repository.claimNext = async () => ({ ...claim, modelRecovery: "authorized" });
+    deps.repository.modelReplaySafety = async () => "allow";
+    deps.prepare = async () => {
+      events.push("model");
+      return { status: "failed", reason: "provider_failed", turns: 1 };
+    };
+    await run(deps);
+    expect(events.filter(event => event === "model")).toHaveLength(1);
+    expect(events).not.toContain("publish");
+    expect(failures[0]).toMatchObject({ phase: "model", reason: "provider_failed", retryable: false });
+  });
+
+  test("one automatic model-change recovery never schedules a recursive paid retry", async () => {
+    const { deps, events, failures } = fixture();
+    deps.repository.claimNext = async () => ({ ...claim, automaticModelRecovery: true });
+    deps.prepare = async () => {
+      events.push("model");
+      return { status: "failed", reason: "provider_failed", turns: 1 };
+    };
+    await run(deps);
+    expect(events.filter(event => event === "model")).toHaveLength(1);
+    expect(events).not.toContain("publish");
+    expect(failures[0]).toMatchObject({ phase: "model", reason: "provider_failed", retryable: false });
+  });
+
+  test.each(["granted", "revoked"] as const)("fences every recovery model invocation when dispatch admission is %s", async (status) => {
+    const admitted = status === "granted";
+    const { deps, events, failures } = fixture();
+    deps.repository.claimNext = async () => ({ ...claim, modelRecovery: "authorized" });
+    deps.repository.modelReplaySafety = async () => "allow";
+    deps.repository.beginModelRecoveryDispatch = async (recovery) => {
+      expect(recovery.attemptId).toBe(claim.attemptId);
+      events.push("dispatch");
+      if (!admitted) throw new Error("lease_lost");
+    };
+    deps.invokeModel = async (_invocation, beforeProviderDispatch) => {
+      await beforeProviderDispatch?.();
+      events.push("provider");
+      return new AIMessage("fixture response");
+    };
+    deps.prepare = async (messages, options) => {
+      await options?.invokeModel?.({ messages, tools: [], modelId: "model" });
+      await options?.invokeModel?.({ messages, tools: [], modelId: "model" });
+      return { status: "prepared", turns: 2, modelId: "model", proposal };
+    };
+
+    await run(deps);
+
+    expect(events.filter((event) => event === "dispatch" || event === "provider")).toEqual(
+      admitted ? ["dispatch", "provider", "provider"] : ["dispatch"],
+    );
+    expect(events.includes("publish")).toBe(admitted);
+    if (!admitted) expect(failures[0]).toMatchObject({ phase: "model", retryable: false });
+  });
+
+  test("cancellation while recovery spend is waiting never commits or invokes", async () => {
+    const { deps, events } = fixture();
+    const lock = Promise.withResolvers<void>();
+    let dispatchSignal: AbortSignal | undefined;
+    deps.repository.claimNext = async () => ({ ...claim, modelRecovery: "authorized" });
+    deps.repository.modelReplaySafety = async () => "allow";
+    deps.repository.beginModelRecoveryDispatch = async (_recovery, signal) => {
+      dispatchSignal = signal;
+      events.push("dispatch-wait");
+      await lock.promise;
+      signal?.throwIfAborted();
+      events.push("dispatch-spent");
+    };
+    deps.invokeModel = async (_invocation, beforeProviderDispatch) => {
+      await beforeProviderDispatch?.();
+      events.push("provider");
+      return new AIMessage("unreachable");
+    };
+    deps.prepare = async (messages, options) => {
+      await options?.invokeModel?.({ messages, tools: [], modelId: "model" });
+      return { status: "prepared", turns: 1, modelId: "model", proposal };
+    };
+
+    const worker = new MemoryReviewWorker(deps, {
+      scanIntervalMs: 60_000,
+      shutdownWaitMs: 100,
+    });
+    worker.start();
+    while (!events.includes("dispatch-wait")) await tick();
+    const stopped = worker.stop();
+    while (dispatchSignal?.aborted !== true) await tick();
+    lock.resolve();
+    await stopped;
+
+    expect(events).not.toContain("dispatch-spent");
+    expect(events).not.toContain("provider");
+  });
+
   test("uncertain publication is not transformed into an automatic model retry", async () => {
     const { deps, events, failures } = fixture();
     deps.repository.publish = async () => { throw new Error("connection lost"); };
@@ -185,7 +280,7 @@ describe("durable Memory review worker", () => {
     expect(events).toContain("publish");
   });
 
-  test("bound service work does not consult a changed or invalid current default", async () => {
+  test("bound service work survives an unavailable current default after the recovery scan", async () => {
     const { deps, events } = fixture();
     let resolved = false;
     deps.resolveModelId = () => { resolved = true; throw new Error("current default unavailable"); };
@@ -196,8 +291,21 @@ describe("durable Memory review worker", () => {
       return { status: "prepared", turns: 1, modelId: options.modelId!, proposal };
     };
     await run(deps);
-    expect(resolved).toBe(false);
+    expect(resolved).toBe(true);
     expect(events).toContain("publish");
+  });
+
+  test("passes the effective service model into the ordinary repository scan", async () => {
+    const { deps } = fixture();
+    let scannedModel: string | undefined;
+    const claimNext = deps.repository.claimNext;
+    deps.repository.claimNext = async (input) => {
+      scannedModel = input.currentServiceModelId;
+      return claimNext(input);
+    };
+    deps.resolveModelId = () => " newly-configured-model ";
+    await run(deps);
+    expect(scannedModel).toBe("newly-configured-model");
   });
 
   test("trusted admission fences exposure, every invocation, and publication", async () => {

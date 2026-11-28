@@ -139,9 +139,15 @@ export interface OrganizerSourceDependencyValidationPort {
   }>): Promise<"current" | "unavailable">;
 }
 
+/** Canonical selected-representation binding for exact inherited source evidence. */
+export interface OrganizerInheritedSourceBindingPort {
+  resolve(dependency: DurableSourceDependency): Promise<string | null>;
+}
+
 export interface OrganizerProposalPublisherOptions {
   readonly repository: OrganizerProposalRepositoryPort;
   readonly sourceDependencies: OrganizerSourceDependencyValidationPort;
+  readonly inheritedSourceBindings?: OrganizerInheritedSourceBindingPort;
   readonly identity: KeyedOrganizerPublicationIdentityPort;
   readonly room: OrganizerPublicationRoomContext;
   /** Required only when an application carries a cross-Room publication plan. */
@@ -580,6 +586,7 @@ function budgetAllows(
 export class OrganizerProposalPublisher {
   readonly #repository: OrganizerProposalRepositoryPort;
   readonly #sourceDependencies: OrganizerSourceDependencyValidationPort;
+  readonly #inheritedSourceBindings: OrganizerProposalPublisherOptions["inheritedSourceBindings"];
   readonly #identity: KeyedOrganizerPublicationIdentityPort;
   readonly #room: OrganizerPublicationRoomContext;
   readonly #crossRoomFences: OrganizerCrossRoomPublicationFencePort | undefined;
@@ -590,6 +597,7 @@ export class OrganizerProposalPublisher {
     assertRoom(options.room);
     this.#repository = options.repository;
     this.#sourceDependencies = options.sourceDependencies;
+    this.#inheritedSourceBindings = options.inheritedSourceBindings;
     this.#identity = options.identity;
     this.#room = Object.freeze({ ...options.room });
     this.#crossRoomFences = options.crossRoomFences;
@@ -1302,13 +1310,14 @@ export class OrganizerProposalPublisher {
 
     for (const dependency of sourceDependencies) {
       const exactSource = bindings.sources.get(dependency.logicalSourceRef);
-      const inheritedFromPredecessor = bindings.exactPlan === undefined
-        ? undefined
-        : predecessor?.semantic.sourceDependencies.some(
+      const inheritedFromPredecessor = bindings.exactPlan !== undefined
+        && dependency.observedContentFingerprint !== undefined
+        && predecessor?.semantic.sourceDependencies.some(
           (source) => sourceIdentity(source) === sourceIdentity(dependency),
         ) === true
-          ? bindings.records.get(predecessor.recordRef)?.readBindingRef
-          : undefined;
+        ? await this.#inheritedSourceBindings?.resolve(dependency)
+          ?? undefined
+        : undefined;
       const readBindingRef = exactSource?.readBindingRef
         ?? inheritedFromPredecessor
         ?? (bindings.exactPlan === undefined ? this.#room.readBindingRef : undefined);

@@ -1,5 +1,6 @@
 import { getExternalRoomPolicy } from "@nautilo/trust";
 import { log } from "@nautilo/logger";
+import { createHmac } from "node:crypto";
 
 import {
   embedTextWithProvenance,
@@ -17,14 +18,17 @@ import {
 import {
   CANDIDATE_POLICY_V1,
   DurableSleepModelLaneUnavailableError,
+  DurableSleepOrganizationUnavailableError,
   DurableSleepProviderOutcomeUnknownError,
   DURABLE_SLEEP_MAX_WORK_ITEMS_PER_RUN,
+  ORGANIZER_BATCH_MAX_ITEMS,
   runDependencyLossRewrite,
   type DurableSleepRunBudget,
   type DurableSleepClaim,
   type DurableSleepSemanticPort,
   type DurableSleepStageAdmission,
   type DurableSleepWorkPort,
+  type DurableOrganizerProposalCheckpoint,
 } from "@nautilo/reflection";
 import type {
   ForegroundRecordContextPort,
@@ -38,11 +42,13 @@ import {
   type RecordEvidencePort,
   type RecordSearchPort,
 } from "@nautilo/reflection/search";
-import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
+import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
+import { invocationAudienceIsEligible } from "@nautilo/reflection/authority";
 import type { MemoryOperationBinding } from "@nautilo/types";
 import {
   BoundedRecordEvidenceTraversalCheckpoints,
   BoundedRecordSearchTraversalCheckpoints,
+  CROSS_ROOM_EXECUTION_PLAN_LIMITS,
   CanonicalRecordSourceReadPort,
   DualModeAuthorityFilteredRecordSearch,
   DualModeRecordRepository,
@@ -174,8 +180,20 @@ export const REFLECTION_SEMANTIC_RUNTIME_POLICY_V1 = Object.freeze({
   } satisfies DurableSleepRunBudget),
 } as const);
 
+type MemoryEvidenceRecordDependency = Extract<DurableModelExposureDependency, { kind: "record" }>;
+
+function sameAuthorityLeaves(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+}
+
 export interface ProductionReflectionMemoryRuntime {
-  readonly readMemoryEvidenceRecord: (dependency: Extract<import("@nautilo/reflection/durable").DurableModelExposureDependency, { kind: "record" }>) => Promise<import("@nautilo/reflection/durable").DurableRecordEnvelope | null>;
+  readonly readMemoryEvidenceRecord: (dependency: MemoryEvidenceRecordDependency) => Promise<DurableRecordEnvelope | null>;
+  readonly readHistoricalOrganizerEvidenceRecord: (dependency: MemoryEvidenceRecordDependency) => Promise<DurableRecordEnvelope | null>;
+  readonly readHistoricalJournalEvidenceRecord: (dependency: MemoryEvidenceRecordDependency) => Promise<DurableRecordEnvelope | null>;
+  readonly readRetiredJournalPredecessor: (dependency: MemoryEvidenceRecordDependency, roomId: string) => Promise<DurableRecordEnvelope | null>;
   readonly worker: ReflectionSemanticWorker;
   readonly recallRecordsPortForState: RecallRecordsPortForState;
   readonly foregroundRecordContextPortForRoom: (
@@ -217,6 +235,7 @@ export interface ProductionReflectionMemoryInput {
     }>): Promise<void>;
   }>;
   readonly resolveModelId: () => string;
+  readonly recoverProviderRefusals?: (input: { now: Date; limit: number; signal: AbortSignal }) => Promise<void>;
   readonly admitMemoryModel?: (
     request: AdmitReflectionMemoryModelRequest,
   ) => Promise<AdmittedReflectionMemoryModel>;
@@ -271,6 +290,49 @@ export function selectRetainedReflectionRepair<T extends object>(
   return first;
 }
 
+/** Process-local model state belongs to the exact leased claim objects.
+ * A replacement lease can carry the same Record generation and must not
+ * inherit admission assertions or replay checks captured by its predecessor. */
+export class ReflectionModelInvocationState<T extends object> {
+  private readonly admitted = new WeakMap<DurableSleepClaim, T>();
+  private readonly replayChecked = new WeakMap<DurableSleepClaim, Set<string>>();
+
+  selectRepair(
+    claims: readonly DurableSleepClaim[],
+    consumed: WeakSet<T>,
+  ): T | null {
+    return selectRetainedReflectionRepair(
+      claims.map((claim) => this.admitted.get(claim)),
+      consumed,
+    );
+  }
+
+  retain(claims: readonly DurableSleepClaim[], admission: T): void {
+    for (const claim of claims) this.admitted.set(claim, admission);
+  }
+
+  admissionFor(claim: DurableSleepClaim): T | undefined {
+    return this.admitted.get(claim);
+  }
+
+  delete(claim: DurableSleepClaim): void {
+    this.admitted.delete(claim);
+    this.replayChecked.delete(claim);
+  }
+
+  wasReplayChecked(claims: readonly DurableSleepClaim[], operationId: string): boolean {
+    return claims.every((claim) => this.replayChecked.get(claim)?.has(operationId) === true);
+  }
+
+  markReplayChecked(claims: readonly DurableSleepClaim[], operationId: string): void {
+    for (const claim of claims) {
+      const checked = this.replayChecked.get(claim) ?? new Set<string>();
+      checked.add(operationId);
+      this.replayChecked.set(claim, checked);
+    }
+  }
+}
+
 function recordEmbedding(): RecordEmbeddingPort {
   return Object.freeze({
     async embed(input: RecordEmbeddingRequest): Promise<RecordEmbeddingResult> {
@@ -304,9 +366,19 @@ function recordEmbedding(): RecordEmbeddingPort {
   });
 }
 
+function reflectionModelLaneScope(
+  modelId: string,
+  configuredDefaultModelId: string,
+): "configured_default" | "exact_binding" {
+  return modelId === configuredDefaultModelId
+    ? "configured_default"
+    : "exact_binding";
+}
+
 export function classifyReflectionModelInvocationFailure(
   error: unknown,
   modelId: string,
+  configuredDefaultModelId: string,
 ): unknown {
   const failure = mapModelFailure(error);
   if (failure === "unknown") return error;
@@ -318,6 +390,7 @@ export function classifyReflectionModelInvocationFailure(
   }
   return new DurableSleepModelLaneUnavailableError(
     Math.max(1, modelInvokeCooldownRemainingMs(modelId)),
+    reflectionModelLaneScope(modelId, configuredDefaultModelId),
   );
 }
 
@@ -417,6 +490,7 @@ export async function createProductionReflectionMemoryRuntime(
     bindings: bindings.evidence,
     ordinary: createDirectDatabaseOrdinaryRoomSourceQueries(input.db),
     fingerprints: createHmacOrdinarySourceFingerprintPort(input.commitmentKey),
+    authorityBlocks: authorityProjections,
     ...(input.protectedMemoryCandidates === undefined
       ? {}
       : { protectedMemoryCandidates: input.protectedMemoryCandidates }),
@@ -512,39 +586,125 @@ export async function createProductionReflectionMemoryRuntime(
     if (resolved.status !== "available") return null;
     return { opened: opened.record, binding: resolved.binding };
   };
+  const readHistoricalJournalEvidenceRecord = async (
+    dependency: MemoryEvidenceRecordDependency,
+    roomId?: string,
+  ): Promise<DurableRecordEnvelope | null> => {
+    if (input.selection.selectedRepresentation !== "ordinary") return null;
+    const blocked = await authorityProjections.isImmediatelyBlocked({
+      recordRef: dependency.recordRef,
+      terminalAuthorityLeafHandles: dependency.terminalAuthorityLeafHandles,
+    });
+    if (blocked !== null) return null;
+    const context = await contextForRecord(dependency.recordRef);
+    if (
+      context === null
+      || (roomId !== undefined && context.binding.roomAnchorRef !== roomId)
+    ) return null;
+    const { opened } = context;
+    if (
+      (opened.lifecycle !== "superseded" && opened.lifecycle !== "resolved")
+      || opened.processingGeneration
+        !== dependency.observedProcessingGeneration + 1
+      || opened.semantic.producer.producerRef !== "stenographer"
+      || !opened.semantic.sourceOwnedKind?.startsWith("journal_event:")
+      || !sameAuthorityLeaves(
+        opened.semantic.terminalAuthorityLeafHandles,
+        dependency.terminalAuthorityLeafHandles,
+      )
+    ) return null;
+    const successors = await repository.readSuccessors({
+      recordRef: opened.recordRef,
+      readBindingRef: context.binding.readBindingRef,
+      limit: 2,
+    });
+    if (
+      successors.status !== "available"
+      || successors.page.continuation !== undefined
+      || successors.page.items.length !== 1
+      || successors.page.items[0]?.predecessorRecordRef !== opened.recordRef
+      || successors.page.items[0]?.relation
+        !== (opened.lifecycle === "superseded" ? "supersedes" : "resolves")
+    ) return null;
+    return opened;
+  };
   type ModelInvocationContext = Readonly<{ roomId: string }>;
-  const admittedModels = new Map<string, AdmittedReflectionMemoryModel>();
+  const modelInvocationState = new ReflectionModelInvocationState<AdmittedReflectionMemoryModel>();
   const consumedRepairs = new WeakSet<AdmittedReflectionMemoryModel>();
-  const replayCheckedExecutions = new Set<string>();
-  const claimKey = (claim: DurableSleepClaim): string =>
-    `${claim.recordRef}\0${claim.generation}`;
+  // Only ordinary execution is admitted to this server-keyed store. Protected
+  // Reflection's output remains owned by its Namespace publication gate.
+  const organizerCheckpointSeal = createHmacAuthorityProjectionCheckpointPort(
+    createHmac("sha256", input.commitmentKey).update("nautilo-reflection-organizer-proposal-v1").digest(),
+  );
+  const organizerCheckpointMaxBytes = ORGANIZER_BATCH_MAX_ITEMS
+    * CROSS_ROOM_EXECUTION_PLAN_LIMITS.applicationPlanTokenBytes
+    + CROSS_ROOM_EXECUTION_PLAN_LIMITS.inputBytes
+    + CROSS_ROOM_EXECUTION_PLAN_LIMITS.outputBytes;
+  const checkpointIdentity = (claim: DurableSleepClaim, binding: MemoryOperationBinding) => [
+    "organizer-proposal/v1", claim.recordRef, claim.generation, claim.changeReason,
+    binding.modelId, binding.inputCommitment,
+  ];
+  const organizerCheckpoints: NonNullable<DurableSleepSemanticPort["organizerCheckpoints"]> = {
+    async read(claim, signal) {
+      signal?.throwIfAborted();
+      const saved = await semanticWork.readOrganizerProposalCheckpoint(claim);
+      if (saved === null) return null;
+      if (saved.sealed.byteLength > organizerCheckpointMaxBytes) throw new Error("Organizer checkpoint exceeds its bound");
+      const [identity, checkpoint] = JSON.parse(organizerCheckpointSeal.openSealedCheckpoint(saved.sealed)) as [
+        ReturnType<typeof checkpointIdentity>, DurableOrganizerProposalCheckpoint,
+      ];
+      if (JSON.stringify(identity) !== JSON.stringify(checkpointIdentity(claim, saved.binding))) {
+        throw new DurableSleepOrganizationUnavailableError();
+      }
+      return checkpoint;
+    },
+    async save(items, signal) {
+      const sealed = [];
+      for (const { claim, checkpoint } of items) {
+        signal?.throwIfAborted();
+        // A complete authenticated plan is needed to revalidate all original
+        // question evidence, including uncited inputs and batch siblings.
+        if (checkpoint.applicationPlanToken === undefined || checkpoint.modelExposureDependencies === undefined) continue;
+        const admitted = modelInvocationState.admissionFor(claim);
+        if (admitted === undefined) continue;
+        await admitted.assertCurrent();
+        const ciphertext = organizerCheckpointSeal.sealCheckpoint(
+          JSON.stringify([checkpointIdentity(claim, admitted.binding), checkpoint]),
+        );
+        if (ciphertext.byteLength > organizerCheckpointMaxBytes) throw new Error("Organizer checkpoint exceeds its bound");
+        sealed.push({ claim, binding: admitted.binding, sealed: ciphertext });
+      }
+      if (sealed.length > 0) await semanticWork.saveOrganizerProposalCheckpoints(sealed);
+    },
+  };
   const dispatchForRecords = async (
     claims: readonly DurableSleepClaim[],
     prompt: string,
     resolveContexts: () => Promise<readonly (ModelInvocationContext | null)[]>,
     signal?: AbortSignal,
     dependencies?: readonly DurableModelExposureDependency[],
+    assertAdditionalCurrent?: () => Promise<void>,
   ): Promise<string> => {
     if (claims.length < 1) throw new TypeError("Record model batch cannot be empty");
     const contexts = await resolveContexts();
     if (contexts.length !== claims.length) {
-      throw new Error("record_model_binding_unavailable");
+      throw new DurableSleepOrganizationUnavailableError();
     }
-    if (contexts.some((context) => context === null) || signal?.aborted) {
-      throw new Error("record_model_binding_unavailable");
+    if (contexts.some((context) => context === null)) {
+      throw new DurableSleepOrganizationUnavailableError();
     }
+    signal?.throwIfAborted();
     const context = contexts[0]!;
     const assertCurrent = async () => {
-      if (signal?.aborted) throw new Error("record_model_binding_unavailable");
+      signal?.throwIfAborted();
       const current = await Promise.all(
         claims.map((claim) => semanticWork.isClaimCurrent(claim)),
       );
       if (current.some((value) => !value)) {
-        throw new Error("record_model_binding_unavailable");
+        throw new DurableSleepOrganizationUnavailableError();
       }
     };
     let wireKind: "primary" | "repair" = "primary";
-    const cached = claims.map((claim) => admittedModels.get(claimKey(claim)));
     let admitted: AdmittedReflectionMemoryModel | Readonly<{
       modelId: string;
       humanUserId: null;
@@ -552,7 +712,7 @@ export async function createProductionReflectionMemoryRuntime(
       assertCurrent: () => Promise<void>;
       assertExposure: () => Promise<void>;
     }>;
-    const retained = selectRetainedReflectionRepair(cached, consumedRepairs);
+    const retained = modelInvocationState.selectRepair(claims, consumedRepairs);
     if (retained !== null) {
       admitted = retained;
       wireKind = "repair";
@@ -574,9 +734,13 @@ export async function createProductionReflectionMemoryRuntime(
           ),
         });
     const modelId = admitted.modelId;
+    const configuredDefaultModelId = input.resolveModelId();
     const currentCooldown = modelInvokeCooldownRemainingMs(modelId);
     if (currentCooldown > 0) {
-      throw new DurableSleepModelLaneUnavailableError(currentCooldown);
+      throw new DurableSleepModelLaneUnavailableError(
+        currentCooldown,
+        reflectionModelLaneScope(modelId, configuredDefaultModelId),
+      );
     }
     try {
       const sortedClaims = [...claims]
@@ -586,23 +750,41 @@ export async function createProductionReflectionMemoryRuntime(
         : `reflection:${sortedClaims
             .map((claim) => `${claim.recordRef}:${claim.generation}`)
             .join(":")}`;
-      const executionKey = `${operationId}:${sortedClaims.map((claim) => claim.leaseToken).join(":")}`;
       const assertInvocationCurrent = async () => {
         await admitted.assertCurrent();
         await admitted.assertExposure(dependencies);
+        await assertAdditionalCurrent?.();
       };
-      if (!replayCheckedExecutions.has(executionKey)) {
+      if (!modelInvocationState.wasReplayChecked(claims, operationId)) {
         await assertInvocationCurrent();
-        const replaySafety = await resolveModelAttemptReplaySafety({
-          kind: "operation",
-          roomId: context.roomId,
-          callType: "room_reflection",
-          operationId,
-        }, { db: input.db });
+        const replaySafety = await resolveModelAttemptReplaySafety(
+          "binding" in admitted
+            ? { kind: "reflection_operation", operationId }
+            : { kind: "operation", roomId: context.roomId, callType: "room_reflection", operationId },
+          { db: input.db },
+        );
         if (replaySafety.decision === "block_unknown") {
           throw new DurableSleepProviderOutcomeUnknownError();
         }
-        replayCheckedExecutions.add(executionKey);
+        modelInvocationState.markReplayChecked(claims, operationId);
+      }
+      if (assertAdditionalCurrent !== undefined) {
+        await assertInvocationCurrent();
+      }
+      const hasOperatorAttempt = claims.some(claim => claim.operatorAuthorizedAttempt);
+      const manualAttempt = hasOperatorAttempt
+        ? await semanticWork.consumeManualProviderAttempt(claims)
+        : "not_applicable";
+      if (
+        hasOperatorAttempt
+        && (
+          claims.some(claim => !claim.operatorAuthorizedAttempt)
+          || manualAttempt !== "consumed"
+        )
+      ) {
+        // A prior stamp may represent an already-reached wire. Never guess by
+        // dispatching it again; the durable hold requires a new operator click.
+        throw new DurableSleepProviderOutcomeUnknownError();
       }
       if (wireKind === "repair" && "binding" in admitted) {
         consumedRepairs.add(admitted);
@@ -637,13 +819,17 @@ export async function createProductionReflectionMemoryRuntime(
         throw new DurableSleepProviderOutcomeUnknownError();
       }
       if ("binding" in admitted) {
-        for (const claim of claims) admittedModels.set(claimKey(claim), admitted);
+        modelInvocationState.retain(claims, admitted);
       }
       return response;
     } catch (error) {
       if (signal?.aborted) throw error;
       if (error instanceof DurableSleepProviderOutcomeUnknownError) throw error;
-      throw classifyReflectionModelInvocationFailure(error, modelId);
+      throw classifyReflectionModelInvocationFailure(
+        error,
+        modelId,
+        configuredDefaultModelId,
+      );
     }
   };
   const invokeForRecords = async (
@@ -651,6 +837,7 @@ export async function createProductionReflectionMemoryRuntime(
     prompt: string,
     signal?: AbortSignal,
     dependencies?: readonly DurableModelExposureDependency[],
+    assertAdditionalCurrent?: () => Promise<void>,
   ): Promise<string> => dispatchForRecords(
     claims,
     prompt,
@@ -664,6 +851,7 @@ export async function createProductionReflectionMemoryRuntime(
     })),
     signal,
     dependencies,
+    assertAdditionalCurrent,
   );
   const invokePreparedOrganizerBatch: NonNullable<
     DurableSleepSemanticPort["invokeOrganizerBatch"]
@@ -684,13 +872,16 @@ export async function createProductionReflectionMemoryRuntime(
     prompt: string,
     signal?: AbortSignal,
     dependencies?: readonly DurableModelExposureDependency[],
-  ): Promise<string> => invokeForRecords([claim], prompt, signal, dependencies);
+    assertAdditionalCurrent?: () => Promise<void>,
+  ): Promise<string> => invokeForRecords(
+    [claim], prompt, signal, dependencies, assertAdditionalCurrent,
+  );
   const proposals: DurableOrganizerProposalApplicationPort = {
     async apply(application) {
       if (application.claim.changeReason === "parent_conflict") {
         throw new TypeError("parent-conflict work cannot publish an Organizer proposal");
       }
-      const admitted = admittedModels.get(claimKey(application.claim));
+      const admitted = modelInvocationState.admissionFor(application.claim);
       try {
         await admitted?.assertCurrent();
         const context = await contextForRecord(application.claim.recordRef);
@@ -740,6 +931,38 @@ export async function createProductionReflectionMemoryRuntime(
               return "unavailable";
             },
           },
+          inheritedSourceBindings: {
+            async resolve(dependency) {
+              const resolved = await bindings.evidence.resolveNamespace(
+                dependency.terminalAuthorityLeafHandle,
+              );
+              if (
+                application.claim.changeReason === "dependency_lost"
+                && input.selection.selectedRepresentation === "ordinary"
+                && (
+                  typeof dependency.observedRevision !== "string"
+                  || dependency.observedRevision.trim().length === 0
+                  || typeof dependency.observedContentFingerprint !== "string"
+                  || dependency.observedContentFingerprint.trim().length === 0
+                  || !context.opened.semantic.terminalAuthorityLeafHandles.includes(
+                    dependency.terminalAuthorityLeafHandle,
+                  )
+                  || resolved === null
+                  || !invocationAudienceIsEligible(
+                    context.binding.invocationAudience,
+                    [resolved.audience],
+                  )
+                  || await authorityProjections.isImmediatelyBlocked({
+                    recordRef: context.opened.recordRef,
+                    terminalAuthorityLeafHandles: [
+                      dependency.terminalAuthorityLeafHandle,
+                    ],
+                  }) !== null
+                )
+              ) return null;
+              return resolved?.bindingRef ?? null;
+            },
+          },
           identity: createHmacOrganizerPublicationIdentityPort(input.commitmentKey),
           crossRoomFences: crossRoomPublicationPlanner,
           recordBindings: publicationBindings,
@@ -764,16 +987,12 @@ export async function createProductionReflectionMemoryRuntime(
           ...(application.signal === undefined ? {} : { signal: application.signal }),
         });
       } finally {
-        admittedModels.delete(claimKey(application.claim));
-        for (const key of replayCheckedExecutions) {
-          if (key.includes(`:${application.claim.leaseToken}`)) {
-            replayCheckedExecutions.delete(key);
-          }
-        }
+        modelInvocationState.delete(application.claim);
       }
     },
   };
   const semantic = new SameRoomDurableSemanticComposition({
+    organizerCheckpoints,
     openOrganizationAttempt: createReflectionOrganizationAttemptOpener({
       checkAvailable: () => input.maintenanceGate.isAcceptingWork(),
       assertClaimCurrent: (claim) => semanticWork.isClaimCurrent(claim),
@@ -807,6 +1026,9 @@ export async function createProductionReflectionMemoryRuntime(
       authorityReconciliation,
       embedding,
       searchProjections,
+      ...(input.selection.selectedRepresentation === "ordinary"
+        ? { missingTerminalDependencies: semanticWork }
+        : {}),
     }),
     bindings: bindings.semantic,
     organizerNeighbors,
@@ -842,25 +1064,46 @@ export async function createProductionReflectionMemoryRuntime(
           recordBindings: publicationBindings,
           eligibility,
           source: sources,
+          ...(input.selection.selectedRepresentation === "ordinary"
+            ? { inheritedMemorySource: sources }
+            : {}),
           invalidation,
           statements: {
             async rewrite(rewriteInput) {
               const result = await runDependencyLossRewrite({
                 remainingSupportStatements: rewriteInput.remainingSupportStatements,
                 invoke: async (prompt, signal) => {
-                  await lossInput.assertCurrent?.();
-                  return invokeForRecord(lossInput.claim, prompt, signal);
+                  const assertEvidenceCurrent = rewriteInput.assertEvidenceCurrent;
+                  return invokeForRecord(
+                    lossInput.claim,
+                    prompt,
+                    signal,
+                    rewriteInput.modelExposureDependencies,
+                    async () => {
+                      await lossInput.assertCurrent?.();
+                      const current = await contextForRecord(
+                        lossInput.claim.recordRef,
+                      );
+                      if (
+                        current === null
+                        || !await assertEvidenceCurrent(
+                          current.binding.invocationAudience,
+                        )
+                      ) throw new DurableSleepOrganizationUnavailableError();
+                    },
+                  );
                 },
                 ...(rewriteInput.signal === undefined
                   ? {}
                   : { signal: rewriteInput.signal }),
               });
-              return result.ok
-                ? {
-                    status: "available" as const,
-                    statement: result.statement,
-                    modelCalls: result.attempts,
-                  }
+              if (result.ok) return {
+                status: "available" as const,
+                statement: result.statement,
+                modelCalls: result.attempts,
+              };
+              return result.errorCode === "invalid_output"
+                ? { status: "invalid_model_output" as const }
                 : { status: "unavailable" as const };
             },
           },
@@ -884,6 +1127,8 @@ export async function createProductionReflectionMemoryRuntime(
   }) ?? { work: semanticWork, semantic };
   // Persisted admissions and current projection metadata make this scan restart-safe.
   let roomProjectionContinuation: string | undefined;
+  let candidateRecoveryContinuation: string | undefined;
+  let candidateRecoveryComplete = false;
   const worker = new ReflectionSemanticWorker({
     maintenanceGate: input.maintenanceGate,
     ...(input.resolveStageAdmission === undefined
@@ -893,7 +1138,7 @@ export async function createProductionReflectionMemoryRuntime(
     semantic: dataOperations.semantic,
     budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget,
     bootstrap: {
-      async bootstrapPage(pageInput) {
+      async bootstrapPage(pageInput, signal) {
         await dataOperations.maintain?.({ limit: pageInput.limit });
         const bootstrapInput = {
           limit: pageInput.limit,
@@ -903,6 +1148,25 @@ export async function createProductionReflectionMemoryRuntime(
         };
         if (pageInput.stageAdmission.maximumStage !== "organization") {
           return semanticWork.bootstrapPage(bootstrapInput);
+        }
+        await input.recoverProviderRefusals?.({ now: new Date(), limit: pageInput.limit, signal });
+        if (!candidateRecoveryComplete && !signal.aborted) {
+          const recovery = await semanticWork.recoverCandidatePolicyQuarantinesPage({
+            limit: pageInput.limit,
+            policyVersion: "candidate-record-changed-v1",
+            undispatchedCandidateRecordChangedOnly: true,
+            ...(candidateRecoveryContinuation === undefined ? {} : { continuation: candidateRecoveryContinuation }),
+          });
+          if (!signal.aborted) {
+            candidateRecoveryContinuation = recovery.continuation;
+            candidateRecoveryComplete = recovery.continuation === undefined;
+          }
+          if (recovery.admitted > 0) {
+            return {
+              admitted: recovery.admitted,
+              ...(pageInput.continuation === undefined ? {} : { continuation: pageInput.continuation }),
+            };
+          }
         }
         const projectionRepair = await semanticWork.admitMissingRoomProjectionPage({
           limit: pageInput.limit,
@@ -1055,8 +1319,63 @@ export async function createProductionReflectionMemoryRuntime(
     async readMemoryEvidenceRecord(dependency) {
       const context = await contextForRecord(dependency.recordRef);
       if (context === null || context.opened.processingGeneration !== dependency.observedProcessingGeneration
-        || JSON.stringify([...context.opened.semantic.terminalAuthorityLeafHandles].sort()) !== JSON.stringify([...dependency.terminalAuthorityLeafHandles].sort())) return null;
+        || !sameAuthorityLeaves(
+          context.opened.semantic.terminalAuthorityLeafHandles,
+          dependency.terminalAuthorityLeafHandles,
+        )) return null;
       return context.opened;
+    },
+    async readHistoricalOrganizerEvidenceRecord(dependency) {
+      if (input.selection.selectedRepresentation !== "ordinary") return null;
+      const blocked = await authorityProjections.isImmediatelyBlocked({
+        recordRef: dependency.recordRef,
+        terminalAuthorityLeafHandles: dependency.terminalAuthorityLeafHandles,
+      });
+      if (blocked !== null) return null;
+      const context = await contextForRecord(dependency.recordRef);
+      if (context === null) return null;
+      const { opened } = context;
+      if (
+        (opened.lifecycle !== "superseded" && opened.lifecycle !== "resolved")
+        || opened.processingGeneration
+          !== dependency.observedProcessingGeneration + 1
+        || opened.semantic.producer.producerRef !== "organizer"
+        || !sameAuthorityLeaves(
+          opened.semantic.terminalAuthorityLeafHandles,
+          dependency.terminalAuthorityLeafHandles,
+        )
+      ) return null;
+      const authority = await authorityProjections.readCurrent(
+        dependency.recordRef,
+      );
+      if (
+        authority === null
+        || authority.processingState !== "current"
+        || authority.recordDisposition !== "available"
+        || authority.recordLifecycle !== opened.lifecycle
+        || !sameAuthorityLeaves(
+          authority.terminalAuthorityLeafHandles,
+          dependency.terminalAuthorityLeafHandles,
+        )
+      ) return null;
+      const successors = await repository.readSuccessors({
+        recordRef: opened.recordRef,
+        readBindingRef: context.binding.readBindingRef,
+        limit: 2,
+      });
+      if (
+        successors.status !== "available"
+        || successors.page.continuation !== undefined
+        || successors.page.items.length !== 1
+        || successors.page.items[0]?.predecessorRecordRef !== opened.recordRef
+        || successors.page.items[0]?.relation
+          !== (opened.lifecycle === "superseded" ? "supersedes" : "resolves")
+      ) return null;
+      return opened;
+    },
+    readHistoricalJournalEvidenceRecord,
+    async readRetiredJournalPredecessor(dependency, roomId) {
+      return readHistoricalJournalEvidenceRecord(dependency, roomId);
     },
     worker,
     recallRecordsPortForState,

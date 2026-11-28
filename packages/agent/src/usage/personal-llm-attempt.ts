@@ -160,6 +160,8 @@ export async function runPersonalLlmAttempt<T>(input: {
   hasObservedProviderWork?: (() => boolean) | undefined;
   /** Optional live authority fence, evaluated immediately before provider work. */
   assertStillAuthorized?: (() => void | Promise<void>) | undefined;
+  /** Optional one-shot mutation after the final pure authority/cancellation fence. */
+  beforeProviderDispatch?: (() => void | Promise<void>) | undefined;
   invoke: () => Promise<T>;
 }, deps: PersonalAttemptDependencies = defaultDependencies): Promise<T> {
   const context = getUsageContext();
@@ -173,6 +175,10 @@ export async function runPersonalLlmAttempt<T>(input: {
     if (input.assertStillAuthorized) {
       await input.assertStillAuthorized();
       input.signal?.throwIfAborted();
+    }
+    if (input.beforeProviderDispatch) {
+      input.signal?.throwIfAborted();
+      await input.beforeProviderDispatch();
     }
     return input.invoke();
   }
@@ -271,6 +277,10 @@ export async function runPersonalLlmAttempt<T>(input: {
       authorizationGuardEntered = true;
       await input.assertStillAuthorized();
       input.signal?.throwIfAborted();
+    }
+    if (input.beforeProviderDispatch) {
+      authorizationGuardEntered = true;
+      await input.beforeProviderDispatch();
     }
     invocationEntered = true;
     const result = await runWithUsageContext({ ...context, trackedAttemptId: id,

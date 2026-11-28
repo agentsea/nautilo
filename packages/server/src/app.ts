@@ -10,7 +10,7 @@ import { taskOrdinaryFallbackRoutes } from "./routes/task-ordinary-fallback-rout
 import { createProtectedTaskRequestAuthorityResolver } from "./routes/task-protected-request-authority";
 import { createProtectedTaskActivationReadinessAssertion, ProtectedTaskActivationReadinessError } from "./routes/protected-task-activation-readiness";
 import { createProtectedTaskActivationParkedIntegrityInspector } from "./routes/protected-task-activation-parked-integrity";
-import { lockProtectedTaskActivationDrainingLease, readProtectedTaskActivationOperationalPersistenceInTransaction } from "@nautilo/db";
+import { recoverExpiredMaintenanceWith, lockProtectedTaskActivationDrainingLease, readProtectedTaskActivationOperationalPersistenceInTransaction } from "@nautilo/db";
 import { protectedTaskPendingAttentionRoutes } from "./routes/protected-task-pending-attention-routes";
 import { createProtectedTaskHumanResponse } from "./routes/protected-task-human-response";
 import { createTaskLocalExecutionCaptureAdmission, resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "./local-execution-task-capture";
@@ -64,12 +64,20 @@ import { resolveArtifactFeedAuthor, resolveArtifactFeedPeople, resolveArtifactCr
   resolveArtifactFeedActorNames } from "./event-feed/artifact-identities";
 import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
 import { getCurrentProtectedMemoryEvidence } from "./lib/protected-memory-model-evidence";
-import { openMemoryOperation } from "./lib/personal-memory-operation";
-import { createPersonalMemoryEvidencePort } from "./lib/personal-memory-evidence-port";
+import {
+  openMemoryOperation,
+  ordinaryHistoricalMemoryEvidenceReaders,
+} from "./lib/personal-memory-operation";
+import {
+  classifyCurrentJournalRecoveryInputs,
+  createPersonalMemoryEvidencePort,
+  readCurrentOrdinaryMemoryEvidenceRecordWith,
+  readRetiredJournalMemoryEvidenceRecordWith,
+} from "./lib/personal-memory-evidence-port";
 import { createStenographerMemoryFunding } from "./lib/stenographer-memory-funding";
 import { createReviewMemoryExposureResolver } from "./lib/memory-review-exposure";
 import { createHmacOrdinarySourceFingerprintPort } from "@nautilo/runtime";
-import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
+import { createServerMemoryReviewRuntime, MEMORY_REVIEW_RUNTIME_POLICY } from "./lib/memory-review-runtime";
 import { createPersonalLlmAttemptOwnerRuntime } from "./lib/personal-llm-attempt-owner";
 import { createSurplusCostRecovery } from "./lib/surplus-cost-reconciliation";
 import { createCloudConversionRuntime } from "./conversions";
@@ -89,6 +97,11 @@ import { assertTaskFundingAdmission, TaskFundingError } from "@nautilo/runtime";
 import { getLatestResumableTaskRun, type NewTask, type Task } from "@nautilo/db";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import { memoryStatusRoutes } from "./routes/memory-status";
+import { createManualMemoryRecovery } from "./lib/manual-memory-recovery";
+import { requestManualJournalRecovery } from "./lib/request-manual-journal-recovery";
+import { requestManualReflectionRecovery } from "./reflection/request-manual-recovery";
+import { MemoryReviewManualRecoveryUnavailableError } from "./lib/memory-review-runtime";
+import { createAutomaticMemoryRecovery } from "./lib/memory-recovery-service";
 import {
   createForegroundMemoryEffectRecovery,
   createPostgresForegroundMemoryEffectRecoveryStore,
@@ -129,6 +142,8 @@ import { getBootstrapOwnerId, getBootstrapOwnerActorId, isUuidString } from "@na
 import {
   PinChallengeProvider,
   buildGuestToolPolicy,
+  findRoomByNamespaceIdWith,
+  getRoomWithAccessWith,
   getUserCapabilities,
   listHumanUserIdsInRoom,
 } from "@nautilo/trust";
@@ -578,6 +593,7 @@ import {
   createLiveShadowDataOperationPolicyBinding,
   createNativeStenographerExtractionPublisher,
   createProductionReflectionMemoryRuntime,
+  reflectionModelOperationId,
   disabledReflectionSemanticSchedulerStatus,
   REFLECTION_SEMANTIC_RUNTIME_POLICY_V1,
   installForegroundRecordContextPortFactory,
@@ -592,6 +608,7 @@ import {
   installTaskFundingPort,
   uninstallTaskFundingPort,
   resolveReflectionModelId,
+  resolveMemoryReviewModelId,
   resolveStenographerModelId,
   type WorkstationAccessAuditEvent,
   type WorkstationAdmissionAuditEvent,
@@ -660,13 +677,16 @@ import {
   materializeDefaultServerProfileOnce,
   refreshServerModelConfigCache,
   getCachedServerModelConfigRow,
+  getServerModelConfigRow,
   kickServerModelConfigRefresh,
   countAcceptedWorkWith,
   countActiveTaskWorkWith,
   listStoppableTasksForOwnerRoom,
   queryStenographerAdminStatus,
   queryReflectionAdminStatus,
+  readReflectionRecoveryDiagnostics,
   getAccountSecurityRowByUserId,
+  acquireEncryptionConsumptionFence,
   getEncryptionTransitionPolicy,
   recordStrictShadowBoundaryHealth,
   retireLegacyUnsupportedTaskObserverHealth,
@@ -1932,6 +1952,11 @@ export async function createApp(options?: CreateAppOptions) {
       resolvedStenographerModelId: resolveStenographerModel(),
     });
   };
+  const automaticMemoryRecovery = createAutomaticMemoryRecovery({
+    db: getServerDirectDb,
+    resolveJournalModel: resolveStenographerModel,
+    resolveReflectionModel,
+  });
   let ordinaryPublisherPromise: ReturnType<
     typeof createNativeStenographerExtractionPublisher
   > | null = null;
@@ -1964,6 +1989,35 @@ export async function createApp(options?: CreateAppOptions) {
     fingerprintProfileSoul: (profile) => createHmacProfileSoulFingerprint(getReflectionCommitmentKey())(profile),
     readRecord: async (dependency) => (await reflectionRuntime()).readMemoryEvidenceRecord(dependency),
   });
+  const transactionMemoryEvidence = (
+    db: Parameters<typeof createPersonalMemoryEvidencePort>[0]["db"],
+  ) => createPersonalMemoryEvidencePort({
+    db,
+    selected: resolveCurrentRecordRepositorySelection,
+    fingerprints: memoryFingerprints,
+    fingerprintProfileSoul: (profile) =>
+      createHmacProfileSoulFingerprint(getReflectionCommitmentKey())(profile),
+    readRecord: (dependency) =>
+      readCurrentOrdinaryMemoryEvidenceRecordWith(db, dependency),
+    roomQueries: {
+      findRoomByNamespaceId: (namespaceId) =>
+        findRoomByNamespaceIdWith(db, namespaceId),
+      getRoomWithAccess: (roomId) => getRoomWithAccessWith(db, roomId),
+    },
+  });
+  const classifyTransactionalJournalInputs = async (
+    db: Parameters<typeof createPersonalMemoryEvidencePort>[0]["db"],
+    dependencies: Parameters<typeof classifyCurrentJournalRecoveryInputs>[0]["dependencies"],
+    roomId: string,
+  ) => {
+    return classifyCurrentJournalRecoveryInputs({
+      dependencies,
+      ports: transactionMemoryEvidence(db),
+      budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
+      readRetiredJournalPredecessor: (dependency) =>
+        readRetiredJournalMemoryEvidenceRecordWith(db, dependency, roomId),
+    });
+  };
   const memoryReviewRuntime = createServerMemoryReviewRuntime(maintenanceGate, {
     evidence: memoryEvidence, budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
     get commitmentKey() { return getReflectionCommitmentKey(); },
@@ -1974,6 +2028,9 @@ export async function createApp(options?: CreateAppOptions) {
     db: getServerDirectDb(), ports: memoryEvidence,
     budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
     get commitmentKey() { return getReflectionCommitmentKey(); }, resolveServiceModel: resolveStenographerModel,
+    readRetiredJournalPredecessor: async (dependency, roomId) =>
+      (await reflectionRuntime()).readRetiredJournalPredecessor(dependency, roomId),
+    classifyCurrentInputs: classifyTransactionalJournalInputs,
     assertAvailable: async () => {
       await maintenanceGate.assertAcceptingNewWork();
       const policy = await getEncryptionTransitionPolicy(getServerDirectDb());
@@ -2100,6 +2157,13 @@ export async function createApp(options?: CreateAppOptions) {
       protected: async () => (await protectedStenographer()).candidates,
     }),
     resolveModelId: resolveStenographerModel,
+    recoverProviderRefusals: async input => {
+      try {
+        await automaticMemoryRecovery.recoverJournal({ ...input, limit: 10 });
+      } catch {
+        app.log.warn("[stenographer] automatic provider recovery scan failed");
+      }
+    },
   });
   const reflectionPolicy = createLiveShadowDataOperationPolicyBinding(
     () => getEncryptionTransitionPolicy(getServerDirectDb()),
@@ -2189,15 +2253,36 @@ export async function createApp(options?: CreateAppOptions) {
               releaseWaitingSemantic: async (claim, stage, failure) => (await reflectionAuthority()).releaseWaitingSemantic(claim, stage, failure), maintain: async operation => (await reflectionAuthority()).maintain(operation)}});
         },
         resolveModelId: resolveReflectionModel,
-        admitMemoryModel: async (request) => openMemoryOperation({
-          role: "memoryReflection", bindingScope: "claim_family",
-          operationKey: `reflection:${[...request.claims].sort((left, right) => left.recordRef.localeCompare(right.recordRef)).map(claim => `${claim.recordRef}:${claim.generation}`).join(":")}`,
-          dependencies: () => Promise.resolve(request.dependencies), ports: getCurrentProtectedMemoryEvidence() ?? memoryEvidence,
-          budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
-          commitmentKey: getReflectionCommitmentKey(), bind: request.bind,
-          assertCurrent: async () => { await maintenanceGate.assertAcceptingNewWork(); await request.assertCurrent(); },
-          resolveServiceModel: resolveReflectionModel,
-        }),
+        recoverProviderRefusals: async input => {
+          try {
+            await automaticMemoryRecovery.recoverReflection(input);
+          } catch {
+            app.log.warn("[reflection] automatic provider recovery scan failed");
+          }
+        },
+        admitMemoryModel: async (request) => {
+          const protectedEvidence = getCurrentProtectedMemoryEvidence();
+          return openMemoryOperation({
+            role: "memoryReflection", bindingScope: "claim_family",
+            operationKey: `reflection:${[...request.claims].sort((left, right) => left.recordRef.localeCompare(right.recordRef)).map(claim => `${claim.recordRef}:${claim.generation}`).join(":")}`,
+            dependencies: () => Promise.resolve(request.dependencies),
+            ports: protectedEvidence ?? memoryEvidence,
+            budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
+            commitmentKey: getReflectionCommitmentKey(), bind: request.bind,
+            ...ordinaryHistoricalMemoryEvidenceReaders(protectedEvidence, {
+              readHistoricalOrganizerPredecessor: (dependency) =>
+                reflectionRuntime().then(runtime =>
+                  runtime.readHistoricalOrganizerEvidenceRecord(dependency)
+                ),
+              readRetiredJournalPredecessor: (dependency) =>
+                reflectionRuntime().then(runtime =>
+                  runtime.readHistoricalJournalEvidenceRecord(dependency)
+                ),
+            }),
+            assertCurrent: async () => { await maintenanceGate.assertAcceptingNewWork(); await request.assertCurrent(); },
+            resolveServiceModel: resolveReflectionModel,
+          });
+        },
       });
       reflectionRuntimePromise = pending;
       void pending.catch(() => {
@@ -2557,7 +2642,98 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   costsRoutes(app);
-  memoryStatusRoutes(app, memoryReviewRuntime);
+  const manualMemoryRecovery = createManualMemoryRecovery({
+    resolveTargets: async db => {
+      // Use one fresh server-config snapshot for the whole operator click.
+      // The selected ids are persisted before any asynchronous lane begins.
+      const config = await getServerModelConfigRow(db);
+      const runtimeConductor = fromRuntimeConfig().nautilo_conductor_model;
+      const serverSurplus = { policyEnabled: config?.preferSurplus === true };
+      const targets: Partial<Record<"stenographer" | "reflection" | "memory", string>> = {};
+      try {
+        targets.stenographer = resolveStenographerModelId({
+          serverConfiguredModelId: config?.stenographerModel,
+          serverConfiguredConductorModelId: config?.conductorModel,
+          runtimeConfiguredConductorModelId: runtimeConductor,
+          serverSurplus,
+        });
+      } catch { /* One unavailable lane must not suppress the other two. */ }
+      try {
+        targets.reflection = resolveReflectionModelId({
+          serverConfiguredModelId: config?.reflectionModel,
+          resolvedStenographerModelId: targets.stenographer ?? "",
+          serverSurplus,
+        });
+      } catch { /* Persist the lane as unavailable at click. */ }
+      try {
+        targets.memory = resolveMemoryReviewModelId({
+          serverConfiguredModelId: config?.memoryReviewModel,
+          serverConfiguredConductorModelId: config?.conductorModel,
+          runtimeConfiguredConductorModelId: runtimeConductor,
+          serverSurplus,
+        });
+      } catch { /* Persist the lane as unavailable at click. */ }
+      return targets;
+    },
+    pageAvailable: async (tx, now) => {
+      // Match the worker lock order. Hold both fences through this page only.
+      await acquireEncryptionConsumptionFence(tx);
+      return (await recoverExpiredMaintenanceWith(tx, now)).snapshot.state === "normal";
+    },
+    pageSize: MEMORY_REVIEW_RUNTIME_POLICY.recoveryPageSize,
+    pollMs: MEMORY_REVIEW_RUNTIME_POLICY.scanIntervalMs,
+    wakeMemory: () => memoryReviewRuntime.wake(),
+    db: getServerDirectDb,
+    assertAvailable: () => maintenanceGate.assertAcceptingNewWork(),
+    onError: processor => app.log.warn({ processor }, "Memory recovery could not assess processor"),
+    recover: {
+      stenographer: async input => {
+        if ((await acquireEncryptionConsumptionFence(input.db)).mode !== "plaintext_only") return { state: "paused" };
+        const config = await getServerModelConfigRow(input.db);
+        const exact = resolveStenographerModelId({
+          serverConfiguredModelId: input.modelId,
+          serverConfiguredConductorModelId: null,
+          runtimeConfiguredConductorModelId: fromRuntimeConfig().nautilo_conductor_model,
+          serverSurplus: { policyEnabled: config?.preferSurplus === true },
+        });
+        if (exact !== input.modelId) throw new Error("Pinned Stenographer model is unavailable");
+        return { state: "assessed", ...await requestManualJournalRecovery({
+          ...input,
+          admitsFreshServiceInputs: async (tx, dependencies, roomId) =>
+            (await classifyTransactionalJournalInputs(
+              tx,
+              dependencies,
+              roomId,
+            ))?.kind === "service",
+        }) };
+      },
+      reflection: async input => {
+        if (!(await getServerContextConfig(input.db)).reflectionSleepEnabled
+          || (await acquireEncryptionConsumptionFence(input.db)).mode !== "plaintext_only") return { state: "paused" };
+        const config = await getServerModelConfigRow(input.db);
+        const exact = resolveReflectionModelId({
+          serverConfiguredModelId: input.modelId,
+          resolvedStenographerModelId: "",
+          serverSurplus: { policyEnabled: config?.preferSurplus === true },
+        });
+        if (exact !== input.modelId) throw new Error("Pinned Reflection model is unavailable");
+        return { state: "assessed", ...await requestManualReflectionRecovery(input) };
+      },
+      memory: async input => {
+        try {
+          return { state: "assessed", ...await memoryReviewRuntime.requestManualRecovery(input) };
+        } catch (error) {
+          if (error instanceof MemoryReviewManualRecoveryUnavailableError
+            && (error.code === "paused" || error.code === "access_unavailable")) return { state: "paused" };
+          throw error;
+        }
+      },
+    },
+  });
+  memoryStatusRoutes(app, { ...memoryReviewRuntime, recovery: {
+    latest: () => manualMemoryRecovery.latest(),
+    request: input => manualMemoryRecovery.request(input),
+  } });
   stenographerStatusRoutes(app, {
     queryStatus: (input) =>
       queryStenographerAdminStatus(input, getServerDirectDb()),
@@ -2577,6 +2753,20 @@ export async function createApp(options?: CreateAppOptions) {
             REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.scanIntervalMilliseconds,
           ),
       }, getServerDirectDb()),
+    queryRecoveryStatus: async (input) => {
+      const diagnostics = await readReflectionRecoveryDiagnostics({
+        ...input,
+        operationIds: (binding) => [
+          reflectionModelOperationId(binding, "primary"),
+          reflectionModelOperationId(binding, "repair"),
+        ],
+      }, getServerDirectDb());
+      return {
+        providerSucceededResultMissing: diagnostics.providerSucceededResultMissing,
+        quarantinedByReason: diagnostics.quarantinedByReason,
+        resumedFromSavedProposal: diagnostics.resumedFromSavedProposal,
+      };
+    },
     queryAuthorityStatus: async (input) =>
       readPostgresReflectionAuthorityStatus({
         product: getServerDirectDb(),
@@ -5272,6 +5462,7 @@ export async function createApp(options?: CreateAppOptions) {
   app.addHook("onClose", async () => {
     await getTtsService().dispose();
     setLiveReviewWriteGuard(null);
+    await manualMemoryRecovery.stop();
     await memoryReviewRuntime.stop();
     await stenographerWorker.stop();
     if (protectedStenographerPromise !== null) await (await protectedStenographerPromise).dispose();
@@ -5324,6 +5515,7 @@ export async function createApp(options?: CreateAppOptions) {
   app.addHook("onListen", () => {
     stenographerWorker.start();
     memoryReviewRuntime.start();
+    manualMemoryRecovery.start();
     void getServerContextConfig(getServerDirectDb())
       .then((config) => reflectionSleepController.setEnabled(
         config.reflectionSleepEnabled,

@@ -131,6 +131,35 @@ describe("admin.stenographerStatus HTTP contract", () => {
     expect(seenUrl).toBe("http://127.0.0.1:9/api/admin/stenographer-status");
   });
 
+  test("opts into source-change recovery details without dropping legacy recovery", async () => {
+    let seenUrl = "";
+    const mockFetch = async (input: Parameters<typeof fetch>[0]) => {
+      seenUrl = typeof input === "string" ? input : (input as URL).toString();
+      return new Response(JSON.stringify({
+        ...SAMPLE,
+        unresolvedProviderOutcomes: 1,
+        staleAuthorizedSourceRooms: 2,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    globalThis.fetch = Object.assign(mockFetch, {
+      preconnect: realFetch.preconnect.bind(realFetch),
+    }) as typeof fetch;
+
+    const client = new NautiloApiClient("http://127.0.0.1:9");
+    const status = await client.admin.stenographerStatus.get({
+      includeRecovery: true,
+      includeRecoverySources: true,
+    });
+
+    expect(status.staleAuthorizedSourceRooms).toBe(2);
+    expect(seenUrl).toBe(
+      "http://127.0.0.1:9/api/admin/stenographer-status?recovery=1&sources=1",
+    );
+  });
+
   test("rejects identity or content fields added to the wire response", async () => {
     const mockFetch = async () =>
       new Response(

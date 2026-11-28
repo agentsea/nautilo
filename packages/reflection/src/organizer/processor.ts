@@ -104,7 +104,7 @@ export type OrganizerProcessorResult =
   | {
       ok: false;
       errorCode: "invalid_input" | "input_too_large" | "invalid_output";
-      attempts: 0 | 2;
+      attempts: 0 | 1 | 2;
       reason: string;
     };
 
@@ -610,6 +610,7 @@ export async function runOrganizerBatch(input: {
   readonly snapshots: readonly OrganizerInput[];
   readonly invoke: (prompt: string, signal: AbortSignal | undefined, indexes: readonly number[]) => Promise<string>;
   /** Revalidate only items needing repair; valid sibling answers remain usable. */
+  readonly allowFormatRepair?: boolean;
   readonly assertRepairCurrent?: (index: number) => Promise<void>;
   readonly signal?: AbortSignal;
 }): Promise<readonly OrganizerBatchItemResult[]> {
@@ -633,10 +634,10 @@ export async function runOrganizerBatch(input: {
     response: await input.invoke(projection.prompt, input.signal, input.snapshots.map((_, index) => index)),
   });
   const invalidQuestions = projection.questions.filter((question) => !first.get(question)?.ok);
-  if (invalidQuestions.length === 0) {
+  if (invalidQuestions.length === 0 || input.allowFormatRepair === false) {
     return projection.questions.map((question) => {
       const result = first.get(question)!;
-      if (!result.ok) throw new TypeError("validated Organizer batch result disappeared");
+      if (!result.ok) return { question, result: { ok: false, errorCode: "invalid_output", attempts: 1, reason: result.reason } };
       return {
         question,
         result: {
@@ -721,6 +722,7 @@ export async function runOrganizerBatch(input: {
 
 export async function runOrganizer(input: {
   snapshot: OrganizerInput;
+  allowFormatRepair?: boolean;
   invoke: OrganizerModelInvoker;
   signal?: AbortSignal;
 }): Promise<OrganizerProcessorResult> {
@@ -745,6 +747,9 @@ export async function runOrganizer(input: {
       attempts: 1,
       inputCodePoints: projection.codePoints,
     };
+  }
+  if (input.allowFormatRepair === false) {
+    return { ok: false, errorCode: "invalid_output", attempts: 1, reason: first.reason };
   }
   const repairPrompt = `${ORGANIZER_CONTRACT}\n\nYour previous response was invalid (${first.reason}). Return one corrected JSON object only.\n\n${projection.prompt.slice(ORGANIZER_CONTRACT.length + 2)}`;
   const second = validateResponse(

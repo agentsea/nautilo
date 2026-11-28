@@ -25,7 +25,7 @@ import { reflectionRecords } from "./reflection-records";
 import { rooms } from "./rooms";
 
 const JOURNAL_ERROR_CODES = sql.raw(
-  "'provider', 'provider_outcome_unknown', 'timeout', 'invalid_output', 'input_too_large', 'lease_lost', 'persistence', 'unknown'",
+  "'provider', 'provider_outcome_unknown', 'input_authority_unavailable', 'timeout', 'invalid_output', 'input_too_large', 'lease_lost', 'persistence', 'unknown'",
 );
 
 export const ROOM_JOURNAL_CRYPTO_PUBLICATION_LIMITS = Object.freeze({
@@ -399,6 +399,108 @@ export const roomJournalBatches = pgTable(
     ),
   ],
 );
+
+/**
+ * One operator-approved fresh service attempt for an exact Journal failure.
+ * The authorization contains no prompt or model output and is consumed only
+ * after the normal worker has reclaimed and revalidated the same work.
+ */
+export const roomJournalModelRecoveries = pgTable(
+  "room_journal_model_recoveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    roomId: uuid("room_id")
+      .notNull()
+      .references(() => rooms.id, { onDelete: "cascade" }),
+    workKind: text("work_kind", {
+      enum: ["extraction", "compaction"],
+    }).notNull(),
+    workId: text("work_id").notNull(),
+    sourceBatchId: uuid("source_batch_id").references(
+      () => roomJournalBatches.id,
+      { onDelete: "cascade" },
+    ),
+    rebuildGeneration: integer("rebuild_generation").notNull(),
+    observedAttempt: integer("observed_attempt").notNull(),
+    observedFailureAt: timestamp("observed_failure_at", {
+      withTimezone: true,
+    }).notNull(),
+    observedThrough: timestamp("observed_through", {
+      withTimezone: true,
+    }).notNull(),
+    targetModelId: text("target_model_id").notNull(),
+    /** A superseded, unspent grant cannot be claimed. A subsequent click may
+     * authorize the replacement input observed under the Room lock. */
+    sourceChangedAt: timestamp("source_changed_at", { withTimezone: true }),
+    replacementInputDigest: text("replacement_input_digest"),
+    authorizedInputDigest: text("authorized_input_digest"),
+    freshServiceInputs: boolean("fresh_service_inputs").notNull().default(false),
+    authorizedBy: uuid("authorized_by").notNull(),
+    authorizedAt: timestamp("authorized_at", {
+      withTimezone: true,
+    }).notNull(),
+    claimLeaseToken: uuid("claim_lease_token"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    spentAt: timestamp("spent_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("uq_room_journal_model_recovery_attempt").on(
+      table.roomId,
+      table.workKind,
+      table.workId,
+      table.rebuildGeneration,
+      table.observedAttempt,
+    ),
+    index("idx_room_journal_model_recovery_pending").on(
+      table.workKind,
+      table.spentAt,
+      table.roomId,
+    ),
+    check(
+      "room_journal_model_recovery_work_shape",
+      sql`(
+        ${table.workKind} = 'extraction'
+        AND ${table.sourceBatchId} IS NOT NULL
+        AND ${table.workId} = ${table.sourceBatchId}::text
+      ) OR (
+        ${table.workKind} = 'compaction'
+        AND ${table.sourceBatchId} IS NULL
+      )`,
+    ),
+    check(
+      "room_journal_model_recovery_coordinates",
+      sql`${table.rebuildGeneration} >= 0
+        AND ${table.observedAttempt} > 0
+        AND char_length(${table.workId}) BETWEEN 1 AND 512
+        AND char_length(${table.targetModelId}) BETWEEN 1 AND 512
+        AND btrim(${table.targetModelId}) = ${table.targetModelId}`,
+    ),
+    check(
+      "room_journal_model_recovery_source_change",
+      sql`(${table.sourceChangedAt} IS NULL) = (${table.replacementInputDigest} IS NULL)
+        AND (${table.replacementInputDigest} IS NULL OR (
+          ${table.workKind} = 'compaction' AND ${table.spentAt} IS NULL
+          AND ${table.replacementInputDigest} ~ '^[0-9a-f]{64}$'
+        ))
+        AND (${table.authorizedInputDigest} IS NULL OR (
+          ${table.workKind} = 'compaction' AND ${table.authorizedInputDigest} ~ '^[0-9a-f]{64}$'
+        ))`,
+    ),
+    check(
+      "room_journal_model_recovery_claim",
+      sql`(${table.claimLeaseToken} IS NULL) = (${table.claimedAt} IS NULL)
+        AND (${table.spentAt} IS NULL OR ${table.claimedAt} IS NOT NULL)`,
+    ),
+    check(
+      "room_journal_model_recovery_time_order",
+      sql`${table.observedFailureAt} <= ${table.observedThrough}
+        AND ${table.observedThrough} <= ${table.authorizedAt}
+        AND (${table.claimedAt} IS NULL OR ${table.authorizedAt} <= ${table.claimedAt})
+        AND (${table.spentAt} IS NULL OR ${table.claimedAt} <= ${table.spentAt})`,
+    ),
+    productPolicy("room_journal_model_recoveries"),
+  ],
+).enableRLS();
 
 /**
  * Append-only semantic Room events. Supersede/resolve operations add a new

@@ -26,6 +26,26 @@ const publicEntry = {
   plaintextReason: "This fixture is deliberately public test catalogue data.",
 } as const;
 
+const serverEncryptedEntry = {
+  ...common,
+  surface: "db",
+  migrationState: "ciphertext_only",
+  classification: "server_encrypted",
+  representationScope: "ordinary_only",
+  supportsEncryptedMode: false,
+  keyCustody: "server_instance_commitment_key",
+  keyDerivation: "Two domain-separated derivation steps produce the field encryption key.",
+  algorithm: "AES-256-GCM",
+  envelopeVersion: 1,
+  nonceBytes: 12,
+  authenticationTagBytes: 16,
+  additionalAuthenticatedData: "A stable domain-separated envelope context.",
+  maximumStoredBytes: 4096,
+  plaintextContents: "A bounded ordinary-mode resumable work checkpoint.",
+  lifecycle: "Opened only for the exact current work identity.",
+  clearConditions: ["Cleared when the owning work completes."],
+} as const;
+
 const validDebt = {
   id: "debt.db.example.secret",
   surface: "db",
@@ -240,6 +260,37 @@ describe("coverage entry security decisions", () => {
       classification: "device_local",
       deviceStorage: "Human-selected local filesystem storage.",
       cleanupContract: "Removed when the local account signs out.",
+      [field]: value,
+    }), error);
+  });
+
+  test("accepts an exact ordinary server-encrypted database contract", () => {
+    expect(validateCoverageEntry(serverEncryptedEntry)).toEqual({ ok: true });
+  });
+
+  test.each([
+    ["surface", "wire", "server-encrypted coverage is limited to database fields"],
+    ["representationScope", "all", "server-encrypted coverage must be ordinary-only"],
+    ["supportsEncryptedMode", true, "server-encrypted coverage cannot claim encrypted-mode support"],
+    ["keyCustody", "namespace", "server-encrypted coverage requires server instance key custody"],
+    ["keyDerivation", "short", "keyDerivation must be descriptive"],
+    ["algorithm", "AES-CBC", "server-encrypted coverage requires AES-256-GCM"],
+    ["envelopeVersion", 2, "server-encrypted envelopeVersion must be 1"],
+    ["nonceBytes", 16, "server-encrypted nonceBytes must be 12"],
+    ["authenticationTagBytes", 12, "server-encrypted authenticationTagBytes must be 16"],
+    ["additionalAuthenticatedData", "short", "additionalAuthenticatedData must be descriptive"],
+    ["maximumStoredBytes", 0, "maximumStoredBytes must be a positive safe integer"],
+    ["maximumStoredBytes", 1.5, "maximumStoredBytes must be a positive safe integer"],
+    ["plaintextContents", "short", "plaintextContents must be descriptive"],
+    ["lifecycle", "short", "lifecycle must be descriptive"],
+    ["clearConditions", [], "clearConditions must contain descriptive lifecycle events"],
+    ["clearConditions", ["short"], "clearConditions must contain descriptive lifecycle events"],
+    ["migrationState", "verified", "server-encrypted database fields must be ciphertext-only"],
+    ["keyFamily", "namespace_ai", "server-encrypted coverage cannot claim Namespace or Agent protection"],
+    ["bridgeRepository", "packages/bridge/server.ts", "server-encrypted coverage cannot claim Namespace or Agent protection"],
+  ])("rejects invalid server-encrypted field %s", (field, value, error) => {
+    onlyError(validateCoverageEntry({
+      ...serverEncryptedEntry,
       [field]: value,
     }), error);
   });

@@ -265,7 +265,7 @@ OrganizerCrossRoomPublicationFencePort {
       const generation = Number(exposure.observedRevision);
       if (
         !Number.isSafeInteger(generation)
-        || exposure.sourceKind === "memory" && generation < 1
+        || generation < 0
       ) {
         return { status: "unavailable", failureDetail: "publication_plan_invalid" };
       }
@@ -490,7 +490,36 @@ OrganizerCrossRoomPublicationFencePort {
     const sources = new Map(input.modelExposureDependencies.flatMap(dependency => dependency.kind !== "source" ? [] : [
       [sourceIdentity(dependency), { ...dependency, authorityBearing: true }] as const,
     ]));
-    return this.planExact({ ...input, selectedInputs, sources });
+    const validatedInputs: CrossRoomInputCoordinate[] = [];
+    for (const coordinate of selectedInputs) {
+      if (coordinate.kind !== "source" || coordinate.crossRoomFence !== undefined
+        || this.ports.selection.selectedRepresentation !== "ordinary") {
+        validatedInputs.push(coordinate);
+        continue;
+      }
+      const namespace = bindingNamespace(coordinate.read.bindingRef, this.ports.selection);
+      if (namespace === undefined || namespace === coordinate.read.namespaceRef) {
+        validatedInputs.push(coordinate);
+        continue;
+      }
+      // Older saved room-local Memory plans paired the original source
+      // Namespace with the changed record's current access binding. Only the
+      // record's verified immutable origin can correct that read coordinate.
+      const source = sources.get(coordinateIdentity(coordinate));
+      const owner = await this.ports.recordBindings.read(input.candidatePlan.workRef);
+      const origin = owner?.originPublicationBindingRef;
+      if (!origin || owner.currentAccessBindingRefs.length !== 1
+        || owner.currentAccessBindingRefs[0] !== coordinate.read.bindingRef
+        || bindingNamespace(origin, this.ports.selection) !== coordinate.read.namespaceRef
+        || source?.terminalAuthorityLeafHandle !== coordinate.read.namespaceRef
+        || !source.observedContentFingerprint) {
+        return { status: "unavailable", failureDetail: "publication_source_authority_unavailable" };
+      }
+      validatedInputs.push({ ...coordinate, read: { ...coordinate.read, bindingRef: origin } });
+    }
+    // Publication still reopens every source at its observed revision and
+    // fingerprint, checks current authority, and intersects every audience.
+    return this.planExact({ ...input, selectedInputs: validatedInputs, sources });
   }
 
   private async planExact(input: Readonly<{

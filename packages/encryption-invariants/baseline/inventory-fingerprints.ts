@@ -9,14 +9,24 @@ export const SOURCE_ALARM_BASELINE = {
 // The complete immutable migration tree includes the reviewed protected-Task
 // persistence tail followed by the external operator transport, isolated
 // control storage, legacy audit archive, owner-deletion correction, and
-// destination-bound MindSwapper credential constraints. The
-// focused migration inventory pins the appended SQL bytes and proves the
-// current schema/snapshot pair remains structurally identical without a DB.
+// destination-bound MindSwapper credential constraints, the server-only Memory
+// review recovery receipt, the Stenographer failure-vocabulary update, and the
+// additive Memory recovery privilege correction, the narrow protected-Task
+// wake-continuation FK permission, and server-only Memory review receipt
+// creation. Ordinary Reflection proposal checkpoints, operator-authorized
+// Journal/Reflection recovery receipts, and the narrow same-generation
+// unspent-authorization constraint, paged recovery checkpoint, and family
+// lookup index append migrations 0392-0398. Source-change commitments, the
+// fresh-service-input fence, checkpoint-family eligibility, and all-state
+// connected-family binding/grant lookup append migrations 0399-0402. The
+// Memory source fingerprint and invalidation time follow in 0403. The focused
+// migration inventory pins those exact generated SQL and snapshot bytes and
+// proves the earlier schema/snapshot tree remains byte-identical without a DB.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 387,
-  "snapshots": 358,
-  "tip": 386,
-  "sha256": "3c1d9736f29ad582233443746d0dd647082e0be852033a697dd83e6ac7b3e74d"
+  "migrations": 404,
+  "snapshots": 375,
+  "tip": 403,
+  "sha256": "0ffa311affb5cec7e9c4ff6202ba557beab548fe4f18488a8b26250bcbdf7f62"
 } as const;
 
 /**
@@ -61,13 +71,34 @@ export const MIGRATION_TREE_BASELINE = {
 // Message-content boundary; only routing, isolation, and archive coordinates
 // are bounded metadata. The fixed restore fence remains the single additional
 // statically unresolved transport and has no caller-controlled SQL input.
+// Memory review recovery writes only exact UUID review coordinates and
+// authorization/dispatch timestamps. Reconfirming a reservation that never
+// dispatched also updates the selected turns with their existing service model
+// so current inputs can bind again. Recovery receipts store no model content.
+// Journal/Reflection/Memory recovery adds five inserts and seventeen updates for
+// bounded receipts, exact claim consumption, checkpoint persistence, model
+// rebinding, and deterministic re-admission. One obsolete Memory-review
+// rotation update is removed, and the canonical transcript rebuild insert
+// moves into its shared typed helper, for a net four inserts and sixteen
+// updates. Delete and unresolved inventories do not change.
+// Page completion, lock-contention checkpoints, binding a legacy compaction,
+// and deferring its next probe after source drift add four metadata-only updates.
+// The seven-fix safety review adds twelve exact metadata-only updates: refused
+// compaction rebinding; two Memory-review grant parks; Journal grant parking,
+// source-change retirement, and retry scheduling; one lane-target checkpoint;
+// and two fresh-input authorization repairs. The focused inventory test pins
+// every exact locator and the four generated migration/snapshot pairs.
+// The final Journal dispatch check retires a stale compaction grant and can
+// remove an unspent extraction grant when its source disappears.
+// A Memory review records when the approved transcript snapshot changes.
+// Only the funding check on the claimed turns can replace a typed commitment.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1667,
-  "insert": 534,
-  "update": 922,
-  "delete": 193,
+  "count": 1712,
+  "insert": 539,
+  "update": 961,
+  "delete": 194,
   "unresolved": 18,
-  "sha256": "a1309da5cc48b967e0581e3a3b81ca32e33c0e87a14e66281680009e860446ff"
+  "sha256": "22ac7a0d977dac05f138f446f9995eea1baf615055a58be5e8ee4b0e91d376cd"
 } as const;
 
 /**

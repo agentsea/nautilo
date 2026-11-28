@@ -51,6 +51,21 @@ describe("canonical Memory source admission", () => {
     expect(updated.sql).toContain('ELSE "memory_review_turns"."has_human" + excluded.has_human');
     expect(updated.sql).toContain('IS NOT NULL THEN excluded.has_human');
   });
+  test("new source evidence on a failed turn preserves its unknown model outcome fence", async () => {
+    const state = fake([{ id: 1, humanTurnId: "human" }]);
+    await admitMemoryReviewSourceInTx(state.tx, { ...input, existingSourceMessageIds: [1], messageId: 2, role: "assistant" });
+    const update = state.conflicts[0]!.set;
+    for (const [field, column] of [
+      ["attemptId", "attempt_id"], ["failureCode", "failure_code"], ["failurePhase", "failure_phase"],
+    ]) {
+      const query = dialect.sqlToQuery(update[field!] as SQL);
+      expect(query.sql).toContain(`"memory_review_turns"."receipt_id" IS NULL`);
+      expect(query.sql).toContain(`"memory_review_turns"."failure_code" = 'provider_outcome_unknown'`);
+      expect(query.sql).toContain(`THEN "memory_review_turns"."${column}" ELSE NULL END`);
+    }
+    expect(update).toMatchObject({ state: "pending", leaseUntil: null, retryAt: null });
+  });
+
   test("duplicate references cannot reopen generations or clear active claims", async () => {
     const state = fake([{ id: 1, humanTurnId: "human" }]);
     await admitMemoryReviewSourceInTx(state.tx, { ...input, existingSourceMessageIds: [1] });

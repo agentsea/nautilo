@@ -293,6 +293,8 @@ export const DATA_TABLES = [
   "public.message_backfill_tool_contexts",
   "public.message_backfill_tool_pending_calls",
   "public.memory_review_turns",
+  "public.memory_review_model_recoveries",
+  "public.memory_recovery_runs",
   "public.memory_review_receipts",
   // content-free live Shadow turn receipt. It references Session and
   // Room, and message crypto revisions may reference it, so restore it after
@@ -341,6 +343,7 @@ export const DATA_TABLES = [
   // room_events.source_batch_id is a required FK.
   "public.room_journal_state",
   "public.room_journal_batches",
+  "public.room_journal_model_recoveries",
   "public.room_events",
   "public.room_event_rollups",
   // content-free crypto-first journal publication receipts. Restored

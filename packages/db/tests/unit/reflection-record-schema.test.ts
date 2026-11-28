@@ -231,6 +231,15 @@ describe("Reflection durable Record schema", () => {
       "claim_generation",
       "accepted_model_binding",
       "accepted_model_binding_generation",
+      "manual_recovery_id",
+      "manual_recovery_source_generation",
+      "manual_recovery_authorized_by",
+      "manual_recovery_authorized_at",
+      "manual_recovery_observed_through",
+      "manual_recovery_service_model_id",
+      "manual_recovery_spent_at",
+      "organizer_proposal_checkpoint",
+      "organizer_proposal_resumed_at",
       "attempt_count",
       "quarantine_round",
       "recovery_policy_version",
@@ -250,6 +259,78 @@ describe("Reflection durable Record schema", () => {
       "created_at",
       "updated_at",
     ]);
+    const semanticWorkConfig = getTableConfig(reflectionRecordSemanticWork);
+    expect(semanticWorkConfig.checks.map((item) => item.name)).toContain(
+      "reflection_record_semantic_work_manual_recovery_coherent",
+    );
+    expect(semanticWorkConfig.indexes.map((item) => item.config.name)).toContain(
+      "idx_reflection_record_semantic_work_manual_recovery_family",
+    );
+    expect(semanticWorkConfig.indexes.map((item) => item.config.name)).toContain(
+      "idx_reflection_record_semantic_work_derived_recovery_cursor",
+    );
+    expect(semanticWorkConfig.indexes.map((item) => item.config.name)).toContain(
+      "idx_reflection_record_semantic_work_manual_recovery_binding",
+    );
+    expect(semanticWorkConfig.indexes.map((item) => item.config.name)).toContain(
+      "idx_reflection_record_semantic_work_manual_recovery_grant",
+    );
+    const reflectionSchema = readFileSync(
+      new URL("../../src/schema/reflection-records.ts", import.meta.url),
+      "utf8",
+    );
+    const manualRecoveryCheck = reflectionSchema.slice(
+      reflectionSchema.indexOf(
+        '"reflection_record_semantic_work_manual_recovery_coherent"',
+      ),
+      reflectionSchema.indexOf(
+        '"reflection_record_semantic_work_schedule_coherent"',
+      ),
+    );
+    expect(manualRecoveryCheck).toContain(
+      "${table.manualRecoverySourceGeneration} = ${table.generation} - 1",
+    );
+    expect(manualRecoveryCheck).toContain(
+      "${table.manualRecoverySourceGeneration} = ${table.generation}",
+    );
+    expect(manualRecoveryCheck).toContain(
+      "${table.acceptedModelBindingGeneration} = ${table.generation}",
+    );
+    expect(manualRecoveryCheck).toContain(
+      "${table.manualRecoveryObservedThrough} <= ${table.manualRecoveryAuthorizedAt}",
+    );
+    expect(manualRecoveryCheck).toContain(
+      "octet_length(${table.manualRecoveryServiceModelId}) > 0",
+    );
+    expect(manualRecoveryCheck).toContain(
+      "${table.manualRecoverySpentAt} >= ${table.manualRecoveryAuthorizedAt}",
+    );
+    expect(reflectionSchema).toContain(
+      "'binding:' || encode(sha256(jsonb_send(${acceptedModelBinding})), 'hex')",
+    );
+    expect(reflectionSchema).toContain(
+      "'recovery:' || ${columns.manualRecoveryId}::text",
+    );
+    expect(reflectionSchema).toContain(
+      "'record:' || md5(${columns.recordId})",
+    );
+    expect(reflectionSchema).toContain(
+      "jsonb_object(array['record', ${recordId}])",
+    );
+    const conditionalConsentMigration = readFileSync(
+      new URL("../../src/migrations/0394_absurd_young_avengers.sql", import.meta.url),
+      "utf8",
+    );
+    expect(conditionalConsentMigration).toContain(
+      'DROP CONSTRAINT "reflection_record_semantic_work_manual_recovery_coherent"',
+    );
+    expect(conditionalConsentMigration).toContain(
+      '"manual_recovery_source_generation" = "reflection_record_semantic_work"."generation"',
+    );
+    expect(conditionalConsentMigration).toContain(
+      '"accepted_model_binding_generation" = "reflection_record_semantic_work"."generation"',
+    );
+    expect(conditionalConsentMigration).not.toContain("ADD COLUMN");
     expect(columnNames(reflectionRecordSemanticWorkAdmissions)).toEqual([
       "record_id",
       "admission_commitment",

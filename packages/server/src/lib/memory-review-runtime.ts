@@ -6,8 +6,9 @@ import type { DurableModelExposureDependency } from "@nautilo/reflection/durable
 import type { PersonalMemoryEvidencePort } from "@nautilo/reflection-bridge/server";
 import {
   getServerContextConfig, getCachedServerModelConfigRow, kickServerModelConfigRefresh,
-  getEncryptionTransitionPolicy, queryMemoryReviewStatus, retryFailedMemoryReviews,
-  type MemoryReviewStatusInput,
+  getEncryptionTransitionPolicy, getServerModelConfigRow, queryMemoryReviewStatus, recoverExpiredMaintenanceWith,
+  retryFailedMemoryReviews,
+  type DirectDatabase, type MemoryReviewStatusInput,
 } from "@nautilo/db";
 import { MemoryReviewWorker, PostgresMemoryReviewRepository,
   recoverMemoryReviewTurnsAtStartup, readOrdinaryMemoryReviewCheckpoint, jobManager, resolveMemoryReviewModelId,
@@ -19,10 +20,16 @@ import { enforceRegisteredStrictShadowBoundary } from "./strict-shadow-policy";
 import { createPersonalMemoryReviewAdmitter } from "./personal-memory-review-funding";
 import type { ProfileSoulFingerprintInput, MemoryReviewClaim } from "@nautilo/runtime";
 import type { MemoryReviewOptions } from "@nautilo/agent";
+import {
+  ManualMemoryReviewRecoveryMaintenanceError,
+  ManualMemoryReviewRecoveryPausedError,
+  ManualMemoryReviewRecoveryPolicyError,
+  requestManualReviewRecovery,
+} from "./request-manual-review-recovery";
 
 // Match existing Stenographer polling/lease/shutdown policy. The lease is
 // renewable; it fences publication, not a limit on the number of Memory turns.
-const MEMORY_REVIEW_RUNTIME_POLICY = {
+export const MEMORY_REVIEW_RUNTIME_POLICY = {
   scanIntervalMs: 15_000, shutdownWaitMs: 10_000,
   leaseMs: 2 * 60_000, retryMs: 15_000, recoveryPageSize: 100,
 } as const;
@@ -47,6 +54,18 @@ export interface ServerMemoryReviewPersonalFundingOptions {
   readonly openHumanSession?: (humanUserId: string, recheck: () => Promise<void>) => CapabilityFundingSession;
 }
 
+export class MemoryReviewManualRecoveryUnavailableError extends Error {
+  constructor(readonly code:
+    | "runtime_stopped"
+    | "paused"
+    | "maintenance_unavailable"
+    | "access_unavailable"
+    | "model_unavailable") {
+    super(`Memory review manual recovery is unavailable: ${code}`);
+    this.name = "MemoryReviewManualRecoveryUnavailableError";
+  }
+}
+
 export function createServerMemoryReviewRuntime(
   maintenanceGate: { isAcceptingWork(): Promise<boolean> },
   personalFunding?: ServerMemoryReviewPersonalFundingOptions,
@@ -56,12 +75,14 @@ export function createServerMemoryReviewRuntime(
   let stopped = false;
   const bootCutoff = new Date();
   let recovered = false;
-  const model = (): MemoryReviewStatusInput["model"] => {
-    kickServerModelConfigRefresh();
-    const config = getCachedServerModelConfigRow();
+  const resolveModel = (config: Readonly<{
+    memoryReviewModel: string | null | undefined;
+    conductorModel: string | null | undefined;
+  }>): MemoryReviewStatusInput["model"] => {
     const configured = config?.memoryReviewModel?.trim();
     const runtimeConductor = fromRuntimeConfig().nautilo_conductor_model;
-    const source = configured ? "server" : "conductor";
+    const source: MemoryReviewStatusInput["model"]["source"] = configured
+      ? "server" : "conductor";
     let id: string | null = configured || config?.conductorModel?.trim() || runtimeConductor || null;
     let available = false;
     try {
@@ -74,19 +95,37 @@ export function createServerMemoryReviewRuntime(
     } catch { /* Unavailable selections remain visible without silent substitution. */ }
     return { id, provider: id ? getProviderFromModelId(id) : null, source, available };
   };
-  const enabled = async () => (await getServerContextConfig(getServerDirectDb())).memoryReviewEnabled ?? fromRuntimeConfig().nautilo_reviewer_enabled;
+  const model = (): MemoryReviewStatusInput["model"] => {
+    kickServerModelConfigRefresh();
+    return resolveModel(getCachedServerModelConfigRow() ?? {
+      memoryReviewModel: null,
+      conductorModel: null,
+    });
+  };
+  const manualModel = async (
+    db: Pick<DirectDatabase, "select">,
+  ): Promise<MemoryReviewStatusInput["model"]> => resolveModel(
+    await getServerModelConfigRow(db) ?? {
+      memoryReviewModel: null,
+      conductorModel: null,
+    },
+  );
+  const enabled = async () =>
+    (await getServerContextConfig(getServerDirectDb())).memoryReviewEnabled
+      ?? fromRuntimeConfig().nautilo_reviewer_enabled;
   const protection = async () => {
     const result = await enforceRegisteredStrictShadowBoundary({ boundaryId: "background.memory.review", state: "unsupported", reason: "unsupported_operation", retryable: false });
     // No protected-content Memory review adapter exists yet. Strict must stay
     // unavailable rather than running the ordinary transcript reader.
     return result.result.disposition === "ordinary";
   };
+  const admitted = async () => memoryReviewRuntimeAdmission({
+    enabled: await enabled(),
+    maintenanceAccepting: await maintenanceGate.isAcceptingWork(),
+    ordinaryContentAvailable: await protection(),
+  });
   const available = async () => {
-    if (!memoryReviewRuntimeAdmission({
-      enabled: await enabled(),
-      maintenanceAccepting: await maintenanceGate.isAcceptingWork(),
-      ordinaryContentAvailable: await protection(),
-    })) return false;
+    if (!await admitted()) return false;
     if (!recovered) {
       const recovery = await recoverMemoryReviewTurnsAtStartup({
         db: getServerDirectDb(), pageSize: MEMORY_REVIEW_RUNTIME_POLICY.recoveryPageSize,
@@ -153,5 +192,66 @@ export function createServerMemoryReviewRuntime(
       });
     },
     async retryFailed() { const result = await retryFailedMemoryReviews(getServerDirectDb()); worker?.wake(); return result; },
+    async requestModelRecovery(input: Parameters<PostgresMemoryReviewRepository["requestModelRecovery"]>[0]) {
+      if (stopped || !await admitted()) return "blocked" as const;
+      const current = ensure();
+      const result = await current.repository.requestModelRecovery(input);
+      if (result === "queued") current.worker.wake();
+      return result;
+    },
+    async requestManualRecovery(input: Readonly<{
+      db: Pick<DirectDatabase, "transaction" | "select" | "insert" | "update" | "execute">;
+      now: Date;
+      observedThrough: Date;
+      page?: { after: string | null; limit: number };
+      authorizedBy: string;
+      /** Exact click-time pin supplied by the durable recovery coordinator. */
+      modelId?: string;
+    }>) {
+      if (stopped) throw new MemoryReviewManualRecoveryUnavailableError("runtime_stopped");
+      // The manual-recovery coordinator checks maintenance before opening its
+      // durable receipt transaction. Database-backed enablement and policy
+      // admission run inside requestManualReviewRecovery's supplied savepoint.
+      const pinnedModelId = input.modelId?.trim();
+      let selected: { id: string | null; available: boolean };
+      if (pinnedModelId) {
+        const config = await getServerModelConfigRow(input.db);
+        try {
+          const exact = resolveMemoryReviewModelId({
+            serverConfiguredModelId: pinnedModelId,
+            serverConfiguredConductorModelId: null,
+            runtimeConfiguredConductorModelId: fromRuntimeConfig().nautilo_conductor_model,
+            serverSurplus: { policyEnabled: config?.preferSurplus === true },
+          });
+          selected = { id: exact, available: exact === pinnedModelId };
+        } catch {
+          selected = { id: pinnedModelId, available: false };
+        }
+      } else {
+        selected = await manualModel(input.db);
+      }
+      if (!selected.available || !selected.id) throw new MemoryReviewManualRecoveryUnavailableError("model_unavailable");
+      try {
+        return await requestManualReviewRecovery({
+          ...input,
+          modelId: selected.id,
+          enabledByDefault: fromRuntimeConfig().nautilo_reviewer_enabled,
+          // The maintenance singleton stays locked until this lane commits.
+          maintenanceAccepting: async (tx, now) =>
+            (await recoverExpiredMaintenanceWith(tx, now)).snapshot.state === "normal",
+        });
+      } catch (error) {
+        if (error instanceof ManualMemoryReviewRecoveryMaintenanceError) {
+          throw new MemoryReviewManualRecoveryUnavailableError("maintenance_unavailable");
+        }
+        if (error instanceof ManualMemoryReviewRecoveryPausedError) {
+          throw new MemoryReviewManualRecoveryUnavailableError("paused");
+        }
+        if (error instanceof ManualMemoryReviewRecoveryPolicyError) {
+          throw new MemoryReviewManualRecoveryUnavailableError("access_unavailable");
+        }
+        throw error;
+      }
+    },
   };
 }

@@ -68,9 +68,9 @@ const REFLECTION_SCHEMA_LOCATORS = [
 
 const REFLECTION_WRITER_LOCATORS = [
   "packages/reflection-bridge/scripts/run-postgres-integration.ts#settleSyntheticSemanticWork:raw_sql:update:public.reflection_record_semantic_work:1",
-  "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#admitSemanticWorkWithinTransaction:raw_sql:insert:public.reflection_record_semantic_work:1",
-  "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#admitSemanticWorkWithinTransaction:raw_sql:insert:public.reflection_record_semantic_work_admissions:1",
-  "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#admitSemanticWorkWithinTransaction:raw_sql:update:public.reflection_record_semantic_work:1",
+  "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#admitSerializedSemanticWorkWithinTransaction:raw_sql:insert:public.reflection_record_semantic_work:1",
+  "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#admitSerializedSemanticWorkWithinTransaction:raw_sql:insert:public.reflection_record_semantic_work_admissions:1",
+  "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#admitSerializedSemanticWorkWithinTransaction:raw_sql:update:public.reflection_record_semantic_work:1",
   "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#checkpoint:raw_sql:update:public.reflection_record_semantic_work:1",
   "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#claimNext:raw_sql:update:public.reflection_record_semantic_work:1",
   "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#claimNext:raw_sql:update:public.reflection_record_semantic_work:2",

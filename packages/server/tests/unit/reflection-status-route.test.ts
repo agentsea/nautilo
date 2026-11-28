@@ -140,6 +140,59 @@ describe("GET /api/admin/reflection-status", () => {
     expect(queryAuthorityStatus).toHaveBeenCalledTimes(1);
   });
 
+  test("adds content-free recovery evidence only when requested", async () => {
+    const queryRecoveryStatus = mock(async () => ({
+      providerSucceededResultMissing: 2,
+      resumedFromSavedProposal: 3,
+    }));
+    const server = Fastify();
+    server.decorateRequest("sessionUserId", null);
+    server.addHook("preHandler", async (request) => { request.sessionUserId = "owner"; });
+    reflectionStatusRoutes(server, {
+      queryStatus: async () => ({ ...fixture(), unresolvedProviderOutcomes: 4 }),
+      queryRecoveryStatus,
+      now: () => new Date(NOW),
+      hasCapability: async () => true,
+    });
+    try {
+      const ordinary = await server.inject({ method: "GET", url: "/api/admin/reflection-status" });
+      expect(ordinary.statusCode).toBe(200);
+      expect(queryRecoveryStatus).not.toHaveBeenCalled();
+      const recovery = await server.inject({ method: "GET", url: "/api/admin/reflection-status?recovery=1" });
+      expect(recovery.statusCode).toBe(200);
+      expect(recovery.json()).toMatchObject({
+        unresolvedProviderOutcomes: 4,
+        providerSucceededResultMissing: 2,
+        resumedFromSavedProposal: 3,
+      });
+      expect(queryRecoveryStatus).toHaveBeenCalledTimes(1);
+    } finally { await server.close(); }
+  });
+
+  test("preserves canonical health and hold counts when optional recovery evidence fails", async () => {
+    const server = Fastify();
+    server.decorateRequest("sessionUserId", null);
+    server.addHook("preHandler", async request => { request.sessionUserId = "owner"; });
+    const ordinary = { ...fixture(), unresolvedProviderOutcomes: 4 };
+    let malformed = false;
+    reflectionStatusRoutes(server, {
+      queryStatus: async () => ordinary,
+      queryRecoveryStatus: async () => {
+        if (malformed) return { providerSucceededResultMissing: -1 };
+        throw new Error("sensitive diagnostic data");
+      },
+      hasCapability: async () => true,
+    });
+    try {
+      for (const value of [false, true]) {
+        malformed = value;
+        const response = await server.inject({ method: "GET", url: "/api/admin/reflection-status?recovery=1" });
+        expect(response.statusCode).toBe(200);
+        expect(reflectionAdminStatusSchema.parse(response.json())).toEqual(ordinary);
+      }
+    } finally { await server.close(); }
+  });
+
   test("rejects extra identity or content fields", async () => {
     const { server } = app(mock(async () => ({
       ...fixture(),

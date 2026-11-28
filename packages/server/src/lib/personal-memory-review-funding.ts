@@ -19,17 +19,21 @@ import type {
 } from "@nautilo/runtime";
 import {
   openMemoryOperation,
+  MemoryReviewRecoveryEvidenceChangedError,
   type AdmittedMemoryOperation,
   type OpenMemoryOperationInput,
 } from "./personal-memory-operation";
 
-type InvokeModel = NonNullable<MemoryReviewOptions["invokeModel"]>;
+type InvokeModel = AdmittedMemoryReviewModel["invokeModel"];
 type MemoryReviewSnapshot = Parameters<NonNullable<MemoryReviewOptions["onModelExposure"]>>[0][number];
 
 async function translatePersonalEvidenceLoss<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
+    if (error instanceof MemoryReviewRecoveryEvidenceChangedError) {
+      throw new MemoryReviewError("source_changed");
+    }
     if (error instanceof PersonalMemoryEvidenceChangedError) {
       throw new MemoryReviewError("memory_unavailable");
     }
@@ -50,6 +54,7 @@ export interface PersonalMemoryReviewFundingOptions {
   ) => Promise<readonly DurableModelExposureDependency[] | undefined>;
   readonly openHumanSession?: (humanUserId: string, recheck: () => Promise<void>) => CapabilityFundingSession;
   /** Test seam; production uses the shared operation admission owner. */
+  readonly invokeChat?: typeof invokeChatModelWithFallback;
   readonly openOperation?: (input: OpenMemoryOperationInput) => Promise<AdmittedMemoryOperation>;
 }
 
@@ -73,7 +78,7 @@ export function createPersonalMemoryReviewAdmitter(options: PersonalMemoryReview
       resolveServiceModel: options.resolveServiceModel,
       ...(options.openHumanSession === undefined ? {} : { openHumanSession: options.openHumanSession }),
     }));
-    const invokeModel: InvokeModel = async (invocation) => translatePersonalEvidenceLoss(() => runWithUsageContext({
+    const invokeModel: InvokeModel = async (invocation, beforeProviderDispatch) => translatePersonalEvidenceLoss(() => runWithUsageContext({
       callType: "memory_review",
       userId: operation.humanUserId,
       roomId: claim.roomId,
@@ -89,7 +94,7 @@ export function createPersonalMemoryReviewAdmitter(options: PersonalMemoryReview
           : { fundingHumanUserId: operation.humanUserId, fundingSession: operation.fundingSession,
               modelFallbackMode: "none" as const, sameModelRetryMode: "none" as const,
               useOpenAIResponsesApi: true, reasoningOutput: operation.modelId.startsWith("openai:") };
-      const { response } = await invokeChatModelWithFallback(
+      const { response } = await (options.invokeChat ?? invokeChatModelWithFallback)(
         invocation.messages,
         invocation.tools,
         operation.modelId,
@@ -97,7 +102,7 @@ export function createPersonalMemoryReviewAdmitter(options: PersonalMemoryReview
         claim.agentId,
         `room:${claim.roomId}`,
         invocation.signal ? { signal: invocation.signal } : undefined,
-        fundingOptions,
+        { ...fundingOptions, ...(beforeProviderDispatch === undefined ? {} : { beforeProviderDispatch }) },
       );
       return response;
     }));

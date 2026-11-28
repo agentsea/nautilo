@@ -7,6 +7,23 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Recover background Journal, Reflection, and Memory review work automatically
+  when it is safe to retry. In Server Admin → Memory, **Recover all memory** lets
+  an operator authorize fresh provider calls for stuck work across all Rooms and
+  see what each processor queued or kept on hold. Assessment continues in
+  batches after the tab closes or the server restarts. After a processor reports an
+  unavailable result, another operator can start a fresh assessment. Retrying
+  an unconfirmed click in the same browser tab preserves its authorization.
+  If Journal compaction inputs change before dispatch, the Memory screen shows
+  the hold. A fresh click can authorize the current inputs when they qualify for
+  server funding. Editing or deleting a source message also prevents an approved
+  Journal extraction from sending the old transcript to the provider.
+  Memory review checks the revisions of all approved source messages immediately
+  before dispatch and holds the review if any message was edited or deleted.
+
+- Let Room Journal rebuilds continue after a rebuilt observation replaces
+  an earlier one, so Reflection can retire work for the old Journal.
+
 - Keep MindSwapper's request reference and recognized stream error reason
   when a response fails, so the failed attempt can be traced from Costs.
 

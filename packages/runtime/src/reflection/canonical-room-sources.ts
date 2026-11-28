@@ -12,11 +12,14 @@ import {
   RECORD_SEARCH_POLICY_V1,
 } from "@nautilo/reflection/search";
 import { CANDIDATE_POLICY_V1 } from "@nautilo/reflection";
+import { invocationAudienceIsEligible } from "@nautilo/reflection/authority";
 import type {
+  AuthorityProjectionStorePort,
   CanonicalRecordSourceReadPort,
   CanonicalRecordSourceReadResult,
   CrossRoomMemoryCandidate,
   CrossRoomMemoryOpenPort,
+  DeclaredInheritedMemorySourceReadPort,
   RecordRepositorySelection,
   RoomLocalMemoryCandidate,
   RoomLocalMemoryCandidatePort,
@@ -89,7 +92,8 @@ export function createHmacOrdinarySourceFingerprintPort(
       for (const value of [
         "nautilo/reflection/ordinary-memory-observation/v1",
         row.id,
-        memoryRevision(row) ?? "legacy",
+        // Keep the fingerprint of already-published revision-zero evidence stable.
+        row.contentRevision === 0 ? "legacy" : String(row.contentRevision),
         row.type,
         row.content,
       ]) {
@@ -101,12 +105,6 @@ export function createHmacOrdinarySourceFingerprintPort(
       return `hmac-sha256:${hmac.digest("base64url")}`;
     },
   });
-}
-
-function memoryRevision(row: Pick<OrdinaryMemorySourceRow, "contentRevision">): string | undefined {
-  return row.contentRevision > 0
-    ? String(row.contentRevision)
-    : undefined;
 }
 
 export function reflectionMessageSourceFingerprint(row: Pick<OrdinaryMessageSourceRow, "id" | "editRevision" | "content">): string {
@@ -230,12 +228,13 @@ function bytes(value: string): number {
 /** Selected-mode source adapter. Protected selection never opens ordinary bytes. */
 export class SelectedRoomLocalSourceAdapter
 implements RoomLocalMemoryCandidatePort, CanonicalRecordSourceReadPort,
-CrossRoomMemoryOpenPort {
+CrossRoomMemoryOpenPort, DeclaredInheritedMemorySourceReadPort {
   constructor(private readonly ports: Readonly<{
     selection: RecordRepositorySelection;
     bindings: CanonicalRoomEvidenceBindingPort;
     ordinary: OrdinaryRoomSourceQueryPort;
     fingerprints: OrdinarySourceFingerprintPort;
+    authorityBlocks?: Pick<AuthorityProjectionStorePort, "isImmediatelyBlocked">;
     protectedMemoryCandidates?: RoomLocalMemoryCandidatePort;
     protectedSource?: CanonicalRecordSourceReadPort;
   }>) {}
@@ -283,17 +282,17 @@ CrossRoomMemoryOpenPort {
       if (
         current === null
         || current.tier > 2
-        || memoryRevision(current) !== memoryRevision(row)
+        || current.contentRevision !== row.contentRevision
         || this.ports.fingerprints.memory(current)
           !== this.ports.fingerprints.memory(row)
       ) continue;
-      const observedRevision = memoryRevision(row);
+      const observedRevision = String(row.contentRevision);
       const observedContentFingerprint = this.ports.fingerprints.memory(row);
       const logicalSourceRef = `memory:${row.id}`;
       const dependency: DurableSourceDependency = {
         sourceKind: MEMORY_SOURCE_KIND,
         logicalSourceRef,
-        ...(observedRevision === undefined ? {} : { observedRevision }),
+        observedRevision,
         observedContentFingerprint,
         terminalAuthorityLeafHandle: binding.namespaceId,
         authorityBearing: true,
@@ -312,7 +311,7 @@ CrossRoomMemoryOpenPort {
           lifecycle: "current",
           sourceOwnedKind: MEMORY_SOURCE_KIND,
           observedLogicalObjectRef: logicalSourceRef,
-          ...(observedRevision === undefined ? {} : { observedRevision }),
+          observedRevision,
         },
         dependency,
       });
@@ -347,6 +346,46 @@ CrossRoomMemoryOpenPort {
     return { status: "unavailable" };
   }
 
+  async readExactDeclaredMemory(
+    input: Parameters<DeclaredInheritedMemorySourceReadPort["readExactDeclaredMemory"]>[0],
+  ): ReturnType<DeclaredInheritedMemorySourceReadPort["readExactDeclaredMemory"]> {
+    if (
+      this.ports.selection.selectedRepresentation !== "ordinary"
+      || input.signal?.aborted
+      || input.dependency.sourceKind !== MEMORY_SOURCE_KIND
+      || !input.dependency.authorityBearing
+    ) return { status: "not_applicable" };
+    if (
+      typeof input.dependency.observedRevision !== "string"
+      || input.dependency.observedRevision.trim().length === 0
+      || typeof input.dependency.observedContentFingerprint !== "string"
+      || input.dependency.observedContentFingerprint.trim().length === 0
+    ) return { status: "unavailable" };
+    const native = await this.ports.bindings.resolveNamespace(
+      input.dependency.terminalAuthorityLeafHandle,
+    );
+    if (
+      native === null
+      || native.namespaceId !== input.dependency.terminalAuthorityLeafHandle
+    ) return { status: "unavailable" };
+    if (native.bindingRef === input.evidenceBindingRef) {
+      return { status: "not_applicable" };
+    }
+    if (
+      !invocationAudienceIsEligible(input.invocationAudience, [native.audience])
+      || this.ports.authorityBlocks === undefined
+      || await this.ports.authorityBlocks.isImmediatelyBlocked({
+        recordRef: input.owningRecordRef,
+        terminalAuthorityLeafHandles: [native.namespaceId],
+      }) !== null
+    ) return { status: "unavailable" };
+    return this.#readMemory(
+      input.dependency,
+      native.namespaceId,
+      input.returnedBytesMaximum,
+    );
+  }
+
   async open(
     input: Readonly<{
       candidate: CrossRoomMemoryCandidate;
@@ -376,12 +415,12 @@ CrossRoomMemoryOpenPort {
       || bytes(row.content)
         > RECORD_SEARCH_POLICY_V1.recordStatementMaximumUtf8Bytes
     ) return { status: "stale" };
-    const observedRevision = memoryRevision(row);
+    const observedRevision = String(row.contentRevision);
     const observedContentFingerprint = this.ports.fingerprints.memory(row);
     const dependency: DurableSourceDependency = {
       sourceKind: MEMORY_SOURCE_KIND,
       logicalSourceRef: input.candidate.logicalSourceRef,
-      ...(observedRevision === undefined ? {} : { observedRevision }),
+      observedRevision,
       observedContentFingerprint,
       terminalAuthorityLeafHandle: binding.namespaceId,
       authorityBearing: true,
@@ -401,7 +440,7 @@ CrossRoomMemoryOpenPort {
         lifecycle: "current",
         sourceOwnedKind: MEMORY_SOURCE_KIND,
         observedLogicalObjectRef: input.candidate.logicalSourceRef,
-        ...(observedRevision === undefined ? {} : { observedRevision }),
+        observedRevision,
       },
     };
   }
@@ -420,7 +459,7 @@ CrossRoomMemoryOpenPort {
     if (row === null) return { status: "unavailable" };
     if (
       row.tier > 2
-      || dependency.observedRevision !== memoryRevision(row)
+      || (dependency.observedRevision ?? "0") !== String(row.contentRevision)
       || dependency.observedContentFingerprint !== this.ports.fingerprints.memory(row)
     ) return { status: "changed" };
     if (bytes(row.content) > maximumBytes) return { status: "unavailable" };

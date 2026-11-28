@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { runDependencyLossRewrite } from "@nautilo/reflection";
+import type { EffectiveAudienceAlternative } from "@nautilo/reflection/authority";
 
 import {
   ExactGroundedDependencyLossResolver,
@@ -131,6 +133,530 @@ describe("exact grounded dependency loss", () => {
       },
     })).toEqual({ status: "unavailable" });
     expect(rewrites).toBe(0);
+  });
+
+  test("reopens declared inherited Memory and revalidates it before rewrite", async () => {
+    const changedDependency = {
+      ...dependency,
+      logicalSourceRef: "memory:changed",
+    };
+    const inheritedReads: unknown[] = [];
+    const invalidations: unknown[] = [];
+    let rewriteInput: unknown;
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {} as never,
+      repository: {} as never,
+      source: {
+        async readExact({ dependency: current }) {
+          return current.logicalSourceRef === dependency.logicalSourceRef
+            ? { status: "unavailable" as const }
+            : { status: "changed" as const };
+        },
+      },
+      inheritedMemorySource: {
+        async readExactDeclaredMemory(value) {
+          inheritedReads.push(value);
+          return {
+            status: "available",
+            kind: "memory",
+            content: "Exact inherited Memory support.",
+          };
+        },
+      },
+      invalidation: { async admit(value) { invalidations.push(value); } },
+      statements: {
+        async rewrite(value) {
+          rewriteInput = value;
+          return {
+            status: "available",
+            statement: "Inherited support remains current.",
+            modelCalls: 1,
+          };
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [dependency, changedDependency],
+          childRecordRefs: [],
+        },
+      },
+    })).toMatchObject({
+      status: "partial_loss",
+      remainingSourceDependencies: [dependency],
+    });
+    expect(inheritedReads).toHaveLength(2);
+    expect(inheritedReads[0]).toMatchObject({
+      dependency,
+      owningRecordRef: input.record.recordRef,
+      evidenceBindingRef: input.binding.readBindingRef,
+      invocationAudience: input.binding.invocationAudience,
+    });
+    expect(rewriteInput).toMatchObject({
+      remainingSupportStatements: ["Exact inherited Memory support."],
+      modelExposureDependencies: [{
+        kind: "source",
+        sourceKind: dependency.sourceKind,
+        logicalSourceRef: dependency.logicalSourceRef,
+        observedRevision: dependency.observedRevision,
+        observedContentFingerprint: dependency.observedContentFingerprint,
+        terminalAuthorityLeafHandle: dependency.terminalAuthorityLeafHandle,
+      }],
+    });
+    const assertEvidenceCurrent = (rewriteInput as {
+      assertEvidenceCurrent: (
+        audience: Readonly<{
+          humanRefs: readonly string[];
+          includesPublicBoundary: boolean;
+        }>,
+      ) => Promise<boolean>;
+    }).assertEvidenceCurrent;
+    const currentAudience = {
+      humanRefs: ["human:one", "human:two"],
+      includesPublicBoundary: false,
+    } as const;
+    expect(await assertEvidenceCurrent(currentAudience)).toBe(true);
+    expect(inheritedReads).toHaveLength(3);
+    expect(inheritedReads[2]).toMatchObject({
+      invocationAudience: currentAudience,
+    });
+    expect(invalidations).toEqual([{
+      dependency: changedDependency,
+      reason: "changed",
+    }]);
+  });
+
+  test("leaves undeclared or inaccessible inherited Memory untouched", async () => {
+    for (const variant of ["undeclared", "inaccessible"] as const) {
+      const invalidations: unknown[] = [];
+      let inheritedReads = 0;
+      const resolver = new ExactGroundedDependencyLossResolver({
+        eligibility: {} as never,
+        repository: {} as never,
+        source: { async readExact() { return { status: "unavailable" }; } },
+        inheritedMemorySource: {
+          async readExactDeclaredMemory() {
+            inheritedReads += 1;
+            return { status: "unavailable" };
+          },
+        },
+        invalidation: { async admit(value) { invalidations.push(value); } },
+        statements: {} as never,
+      });
+      expect(await resolver.resolve({
+        ...input,
+        record: {
+          ...input.record,
+          semantic: {
+            ...input.record.semantic,
+            childRecordRefs: [],
+            terminalAuthorityLeafHandles: variant === "undeclared"
+              ? ["namespace:other"]
+              : [dependency.terminalAuthorityLeafHandle],
+          },
+        },
+      })).toEqual({ status: "unavailable" });
+      expect(inheritedReads).toBe(variant === "undeclared" ? 0 : 1);
+      expect(invalidations).toEqual([]);
+    }
+  });
+
+  test("stops before rewrite when inherited Memory access is revoked", async () => {
+    const changedDependency = {
+      ...dependency,
+      logicalSourceRef: "memory:changed",
+    };
+    let inheritedReads = 0;
+    let rewrites = 0;
+    const invalidations: unknown[] = [];
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {} as never,
+      repository: {} as never,
+      source: {
+        async readExact({ dependency: current }) {
+          return current.logicalSourceRef === dependency.logicalSourceRef
+            ? { status: "unavailable" as const }
+            : { status: "changed" as const };
+        },
+      },
+      inheritedMemorySource: {
+        async readExactDeclaredMemory() {
+          inheritedReads += 1;
+          return inheritedReads === 1
+            ? {
+                status: "available",
+                kind: "memory",
+                content: "Exact inherited Memory support.",
+              }
+            : { status: "unavailable" };
+        },
+      },
+      invalidation: { async admit(value) { invalidations.push(value); } },
+      statements: {
+        async rewrite() {
+          rewrites += 1;
+          return { status: "unavailable" };
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [dependency, changedDependency],
+          childRecordRefs: [],
+        },
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(inheritedReads).toBe(2);
+    expect(rewrites).toBe(0);
+    expect(invalidations).toEqual([{
+      dependency: changedDependency,
+      reason: "changed",
+    }]);
+  });
+
+  test.each([0, 1])("refuses the next provider call when inherited Memory is revoked after %i calls", async (allowedCalls) => {
+    const changedDependency = {
+      ...dependency,
+      logicalSourceRef: "memory:changed",
+    };
+    let wires = 0;
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {} as never,
+      repository: {} as never,
+      source: {
+        async readExact({ dependency: current }) {
+          return current.logicalSourceRef === dependency.logicalSourceRef
+            ? { status: "unavailable" as const }
+            : { status: "changed" as const };
+        },
+      },
+      inheritedMemorySource: {
+        async readExactDeclaredMemory(value) {
+          return value.invocationAudience.humanRefs.includes("human:revoked")
+            ? { status: "unavailable" }
+            : {
+                status: "available",
+                kind: "memory",
+                content: "Exact inherited Memory support.",
+              };
+        },
+      },
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite(value) {
+          const revoked = new Error("access revoked");
+          try {
+            const result = await runDependencyLossRewrite({
+              remainingSupportStatements: value.remainingSupportStatements,
+              invoke: async () => {
+                const audience = wires === allowedCalls
+                  ? { humanRefs: ["human:revoked"], includesPublicBoundary: false }
+                  : input.binding.invocationAudience;
+                if (!await value.assertEvidenceCurrent(audience)) throw revoked;
+                wires++;
+                // An invalid first response exercises the real corrective call.
+                return "{}";
+              },
+            });
+            if (!result.ok) throw new Error("expected revocation before retry exhaustion");
+            return { status: "available", statement: result.statement, modelCalls: result.attempts };
+          } catch (error) {
+            if (error !== revoked) throw error;
+            return { status: "unavailable" };
+          }
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [dependency, changedDependency],
+          childRecordRefs: [],
+        },
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(wires).toBe(allowedCalls);
+  });
+
+  test.each([0, 1])("refuses the next provider call when retained Record access is revoked after %i calls", async (allowedCalls) => {
+    const recordRefs = Array.from({ length: 5 }, (_, index) => `record:support:${index + 1}`);
+    let wires = 0;
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {
+        async check({ invocationAudience }: { invocationAudience: EffectiveAudienceAlternative }) {
+          return invocationAudience.humanRefs.includes("human:revoked")
+            ? { status: "unavailable" as const, reason: "not_eligible" as const }
+            : { status: "eligible" as const };
+        },
+      } as never,
+      recordBindings: {
+        async read(recordRef) {
+          return {
+            originPublicationBindingRef: `binding:${recordRef}`,
+            currentAccessBindingRefs: [`binding:${recordRef}`],
+            representationGeneration: 1,
+            authorityProjectionGeneration: 1,
+          };
+        },
+      },
+      recordState: {
+        async readState() {
+          return {
+            status: "available" as const,
+            lifecycle: "current" as const,
+            processingGeneration: 1,
+            disposition: "available" as const,
+          };
+        },
+        async readSuccessors() {
+          return { status: "available" as const, successorRecordRefs: [], complete: true };
+        },
+      },
+      repository: {
+        async read({ recordRef }: { recordRef: string }) {
+          return {
+            status: "available" as const,
+            record: {
+              ...input.record,
+              recordRef,
+              structuralHeight: 0,
+              semantic: {
+                ...input.record.semantic,
+                observedContentFingerprint: `sha256:${recordRef}`,
+                statement: `Exact support from ${recordRef}.`,
+                sourceDependencies: [],
+                childRecordRefs: [],
+              },
+            },
+          };
+        },
+      } as never,
+      source: { async readExact() { return { status: "changed" as const }; } },
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite(value) {
+          const revoked = new Error("record access revoked");
+          try {
+            const result = await runDependencyLossRewrite({
+              remainingSupportStatements: value.remainingSupportStatements,
+              invoke: async () => {
+                const audience = wires === allowedCalls
+                  ? { humanRefs: ["human:revoked"], includesPublicBoundary: false }
+                  : input.binding.invocationAudience;
+                if (!await value.assertEvidenceCurrent(audience)) throw revoked;
+                wires += 1;
+                return "{}";
+              },
+            });
+            if (!result.ok) throw new Error("expected revocation before retry exhaustion");
+            return {
+              status: "available" as const,
+              statement: result.statement,
+              modelCalls: result.attempts,
+            };
+          } catch (error) {
+            if (error !== revoked) throw error;
+            return { status: "unavailable" as const };
+          }
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          childRecordRefs: recordRefs,
+        },
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(wires).toBe(allowedCalls);
+  });
+
+  test("reopens an exact retained Record coordinate for every current-evidence check", async () => {
+    type CurrentState = {
+      bindingAvailable: boolean;
+      disposition: "available" | "blocked";
+      eligible: boolean;
+      lifecycle: "current" | "superseded";
+      processingGeneration: number;
+      statement: string;
+      fingerprint: string;
+      leaves: string[];
+    };
+    const original = (): CurrentState => ({
+      bindingAvailable: true,
+      disposition: "available",
+      eligible: true,
+      lifecycle: "current",
+      processingGeneration: 1,
+      statement: "Exact retained Record support.",
+      fingerprint: "sha256:retained",
+      leaves: ["namespace:one"],
+    });
+    let current = original();
+    const audiences: unknown[] = [];
+    let rewriteInput: unknown;
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {
+        async check({ invocationAudience }: { invocationAudience: unknown }) {
+          audiences.push(invocationAudience);
+          return current.eligible
+            ? { status: "eligible" as const }
+            : { status: "unavailable" as const, reason: "not_eligible" as const };
+        },
+      } as never,
+      recordBindings: {
+        async read() {
+          return current.bindingAvailable
+            ? {
+                originPublicationBindingRef: "binding:current",
+                currentAccessBindingRefs: ["binding:current"],
+                representationGeneration: 1,
+                authorityProjectionGeneration: 1,
+              }
+            : null;
+        },
+      },
+      recordState: {
+        async readState() {
+          return {
+            status: "available" as const,
+            lifecycle: current.lifecycle,
+            processingGeneration: current.processingGeneration,
+            disposition: current.disposition,
+          };
+        },
+        async readSuccessors() {
+          return { status: "available" as const, successorRecordRefs: [], complete: true };
+        },
+      },
+      repository: {
+        async read() {
+          return {
+            status: "available" as const,
+            record: {
+              ...input.record,
+              recordRef: "record:remaining",
+              lifecycle: current.lifecycle,
+              processingGeneration: current.processingGeneration,
+              structuralHeight: 0,
+              semantic: {
+                ...input.record.semantic,
+                observedContentFingerprint: current.fingerprint,
+                statement: current.statement,
+                terminalAuthorityLeafHandles: current.leaves,
+                sourceDependencies: [],
+                childRecordRefs: [],
+              },
+            },
+          };
+        },
+      } as never,
+      source: { async readExact() { return { status: "changed" as const }; } },
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite(value) {
+          rewriteInput = value;
+          return {
+            status: "available" as const,
+            statement: "Replacement from exact support.",
+            modelCalls: 1 as const,
+          };
+        },
+      },
+    });
+    expect(await resolver.resolve(input)).toMatchObject({ status: "partial_loss" });
+    const assertEvidenceCurrent = (rewriteInput as {
+      assertEvidenceCurrent: (audience: EffectiveAudienceAlternative) => Promise<boolean>;
+    }).assertEvidenceCurrent;
+    const freshAudience = {
+      humanRefs: ["human:fresh"],
+      includesPublicBoundary: false,
+    } as const;
+    expect(await assertEvidenceCurrent(freshAudience)).toBe(true);
+    expect(audiences.at(-1)).toEqual(freshAudience);
+
+    const mutations: Array<(state: CurrentState) => void> = [
+      state => { state.bindingAvailable = false; },
+      state => { state.disposition = "blocked"; },
+      state => { state.eligible = false; },
+      state => { state.lifecycle = "superseded"; },
+      state => { state.processingGeneration = 2; },
+      state => { state.statement = "Changed support."; },
+      state => { state.fingerprint = "sha256:changed"; },
+      state => { state.leaves = ["namespace:other"]; },
+    ];
+    for (const mutate of mutations) {
+      current = original();
+      mutate(current);
+      expect(await assertEvidenceCurrent(freshAudience)).toBe(false);
+    }
+  });
+
+  test("preserves exhausted invalid model output as a distinct dependency-loss result", async () => {
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: { async check() { return { status: "eligible" }; } } as never,
+      repository: {
+        async read() {
+          return {
+            status: "available",
+            record: {
+              ...input.record,
+              recordRef: "record:remaining",
+              structuralHeight: 0,
+              semantic: {
+                ...input.record.semantic,
+                sourceDependencies: [],
+                childRecordRefs: [],
+              },
+            },
+          };
+        },
+      } as never,
+      source: { async readExact() { return { status: "changed" }; } },
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite(value) {
+          const result = await runDependencyLossRewrite({
+            remainingSupportStatements: value.remainingSupportStatements,
+            invoke: async () => "{}",
+          });
+          expect(result).toEqual({
+            ok: false,
+            errorCode: "invalid_output",
+            attempts: 2,
+          });
+          return result.ok
+            ? {
+                status: "available" as const,
+                statement: result.statement,
+                modelCalls: result.attempts,
+              }
+            : result.errorCode === "invalid_output"
+              ? { status: "invalid_model_output" as const }
+              : { status: "unavailable" as const };
+        },
+      },
+    });
+
+    expect(await resolver.resolve(input)).toEqual({ status: "invalid_model_output" });
   });
 
   test("sunsets when the only source is proven changed", async () => {
@@ -289,6 +815,10 @@ describe("exact grounded dependency loss", () => {
         recordRef: "record:remaining-v3",
         readBindingRef: "binding:record:remaining-v3",
       },
+      {
+        recordRef: "record:remaining-v3",
+        readBindingRef: "binding:record:remaining-v3",
+      },
     ]);
     expect(successorReads).toEqual([]);
     expect(stateSuccessorReads).toEqual([{
@@ -298,6 +828,338 @@ describe("exact grounded dependency loss", () => {
       recordRef: "record:remaining-v2",
       limit: 2,
     }]);
+  });
+
+  test("reports a bounded six-Record successor-normalized metadata cycle without opening its payloads", async () => {
+    let rewrites = 0;
+    let metadataCalls = 0;
+    const cycle = Array.from({ length: 6 }, (_, index) => `record:cycle:${index + 1}`);
+    const successor = new Map([
+      ["record:old-child", cycle[0]!],
+    ]);
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: { async check() { return { status: "unavailable", reason: "not_eligible" }; } } as never,
+      recordBindings: {
+        async read(recordRef) {
+          return {
+            originPublicationBindingRef: `binding:${recordRef}`,
+            currentAccessBindingRefs: [`binding:${recordRef}`],
+            representationGeneration: 1,
+            authorityProjectionGeneration: null,
+          };
+        },
+      },
+      recordState: {
+        async readState(recordRef) {
+          metadataCalls += 1;
+          return {
+            status: "available",
+            lifecycle: successor.has(recordRef) ? "superseded" : "current",
+            processingGeneration: 1,
+            disposition: "available",
+          };
+        },
+        async readSuccessors({ recordRef }) {
+          metadataCalls += 1;
+          const next = successor.get(recordRef);
+          return {
+            status: "available",
+            successorRecordRefs: next === undefined ? [] : [next],
+            complete: true,
+          };
+        },
+        async readStructuralDependencyRecordRefs({ recordRef, limit }) {
+          metadataCalls += 1;
+          const index = cycle.indexOf(recordRef);
+          const refs = index < 0 ? [] : [cycle[(index + 1) % cycle.length]!];
+          return {
+            status: "available",
+            dependencyRecordRefs: refs.slice(0, limit),
+            complete: refs.length <= limit,
+          };
+        },
+      },
+      repository: {
+        async read({ recordRef }: { recordRef: string }) {
+          if (recordRef !== cycle[0]) {
+            throw new Error("cycle diagnostic opened a metadata-only payload");
+          }
+          return {
+            status: "available",
+            record: { ...input.record, recordRef },
+          };
+        },
+      } as never,
+      source: {} as never,
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite() {
+          rewrites += 1;
+          return { status: "unavailable" };
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [],
+          childRecordRefs: ["record:old-child"],
+        },
+      },
+    })).toEqual({
+      status: "unavailable",
+      evidence: { kind: "dependency_cycle" },
+    });
+    expect(rewrites).toBe(0);
+    expect(metadataCalls).toBeLessThanOrEqual(input.maxVisitedRecords);
+
+    metadataCalls = 0;
+    expect(await resolver.resolve({
+      ...input,
+      maxVisitedRecords: 4,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [],
+          childRecordRefs: ["record:old-child"],
+        },
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(metadataCalls).toBeLessThanOrEqual(8);
+    expect(rewrites).toBe(0);
+  });
+
+  test("keeps exact historical exposure distinct from structural support and never self-supports", async () => {
+    const historicalExposure = {
+      kind: "record" as const,
+      recordRef: "record:old-exposure",
+      observedProcessingGeneration: 1,
+      terminalAuthorityLeafHandles: ["namespace:one"],
+    };
+    const run = async (
+      historicalEligible: boolean,
+      includeStructuralSupport = true,
+      historicalBindingAvailable = true,
+      sourceChanged = true,
+    ) => {
+      const reads: string[] = [];
+      const eligibilityChecks: string[] = [];
+      let rewriteInput: unknown;
+      const resolver = new ExactGroundedDependencyLossResolver({
+        eligibility: {
+          async check({ recordRef }: { recordRef: string }) {
+            eligibilityChecks.push(recordRef);
+            return recordRef !== historicalExposure.recordRef || historicalEligible
+              ? { status: "eligible" as const }
+              : { status: "unavailable" as const, reason: "not_eligible" as const };
+          },
+        } as never,
+        recordBindings: {
+          async read(recordRef) {
+            if (
+              recordRef === historicalExposure.recordRef
+              && !historicalBindingAvailable
+            ) return null;
+            return {
+              originPublicationBindingRef: `binding:${recordRef}`,
+              currentAccessBindingRefs: [`binding:${recordRef}`],
+              representationGeneration: 1,
+              authorityProjectionGeneration: 1,
+            };
+          },
+        },
+        recordState: {
+          async readState(recordRef) {
+            return {
+              status: "available" as const,
+              lifecycle: recordRef === historicalExposure.recordRef
+                ? "superseded" as const
+                : "current" as const,
+              processingGeneration: recordRef === historicalExposure.recordRef ? 2 : 1,
+              disposition: "available" as const,
+            };
+          },
+          async readSuccessors() {
+            return { status: "available" as const, successorRecordRefs: [], complete: true };
+          },
+        },
+        repository: {
+          async read({ recordRef }: { recordRef: string }) {
+            reads.push(recordRef);
+            const historical = recordRef === historicalExposure.recordRef;
+            return {
+              status: "available" as const,
+              record: {
+                ...input.record,
+                recordRef,
+                lifecycle: historical ? "superseded" as const : "current" as const,
+                processingGeneration: historical ? 2 : 1,
+                structuralHeight: 0,
+                semantic: {
+                  ...input.record.semantic,
+                  statement: historical
+                    ? "Retired context observed by the original model call."
+                    : "Current source-grounded structural leaf.",
+                  sourceDependencies: [],
+                  childRecordRefs: [],
+                  modelExposureDependencies: [],
+                },
+              },
+            };
+          },
+          async readSuccessors() {
+            return {
+              status: "available" as const,
+              page: {
+                items: [{
+                  predecessorRecordRef: historicalExposure.recordRef,
+                  successorRecordRef: "record:sibling-successor",
+                  relation: "supersedes" as const,
+                }],
+              },
+            };
+          },
+        } as never,
+        source: {
+          async readExact() {
+            return sourceChanged
+              ? { status: "changed" as const }
+              : {
+                  status: "available" as const,
+                  kind: "memory" as const,
+                  content: "Current exact source.",
+                };
+          },
+        },
+        invalidation: { async admit() {} },
+        statements: {
+          async rewrite(value) {
+            rewriteInput = value;
+            return {
+              status: "available" as const,
+              statement: "Reorganized only from authenticated remaining support.",
+              modelCalls: 1 as const,
+            };
+          },
+        },
+      });
+      const decision = await resolver.resolve({
+        ...input,
+        record: {
+          ...input.record,
+          recordRef: "record:replacement",
+          semantic: {
+            ...input.record.semantic,
+            childRecordRefs: includeStructuralSupport
+              ? ["record:structural-leaf"]
+              : [],
+            modelExposureDependencies: [historicalExposure],
+          },
+        },
+      });
+      return { decision, eligibilityChecks, reads, rewriteInput };
+    };
+
+    const verified = await run(true);
+    expect(verified.decision).toMatchObject({
+      status: "partial_loss",
+      remainingChildRecordRefs: ["record:structural-leaf"],
+      remainingSourceDependencies: [],
+      remainingModelExposureDependencies: [
+        expect.objectContaining({ recordRef: "record:structural-leaf" }),
+      ],
+    });
+    if (verified.decision.status !== "partial_loss") {
+      throw new Error("expected verified historical rewrite");
+    }
+    expect(verified.decision.remainingModelExposureDependencies)
+      .not.toContainEqual(historicalExposure);
+    expect(verified.rewriteInput).toMatchObject({
+      remainingSupportStatements: [
+        "Current source-grounded structural leaf.",
+      ],
+    });
+    expect(verified.reads).toEqual([
+      "record:structural-leaf",
+      historicalExposure.recordRef,
+      "record:structural-leaf",
+    ]);
+    expect(verified.eligibilityChecks).toEqual([
+      "record:structural-leaf",
+      historicalExposure.recordRef,
+      "record:structural-leaf",
+    ]);
+
+    const stable = await run(true, true, true, false);
+    expect(stable.decision).toEqual({ status: "stable" });
+    expect(stable.rewriteInput).toBeUndefined();
+
+    const revoked = await run(false);
+    expect(revoked.decision).toMatchObject({
+      status: "partial_loss",
+      remainingChildRecordRefs: ["record:structural-leaf"],
+      remainingModelExposureDependencies: [
+        expect.objectContaining({ recordRef: "record:structural-leaf" }),
+      ],
+    });
+    expect(revoked.rewriteInput).toMatchObject({
+      remainingSupportStatements: ["Current source-grounded structural leaf."],
+    });
+    expect(revoked.reads).not.toContain("record:replacement");
+    expect(revoked.eligibilityChecks).not.toContain("record:replacement");
+
+    const missingBinding = await run(true, true, false);
+    expect(missingBinding.decision).toMatchObject({
+      status: "partial_loss",
+      remainingChildRecordRefs: ["record:structural-leaf"],
+    });
+    expect(missingBinding.rewriteInput).toMatchObject({
+      remainingSupportStatements: ["Current source-grounded structural leaf."],
+    });
+    expect(missingBinding.reads).toEqual([
+      "record:structural-leaf",
+      "record:structural-leaf",
+    ]);
+    expect(missingBinding.eligibilityChecks).toEqual([
+      "record:structural-leaf",
+      "record:structural-leaf",
+    ]);
+
+    const ungrounded = await run(true, false, false);
+    expect(ungrounded.decision).toEqual({ status: "unavailable" });
+    expect(ungrounded.rewriteInput).toBeUndefined();
+  });
+
+  test("propagates unexpected authority failures instead of classifying them as evidence", async () => {
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {
+        async check() { throw new Error("authority storage failed"); },
+      } as never,
+      repository: {
+        async read() {
+          return {
+            status: "available",
+            record: { ...input.record, recordRef: "record:remaining" },
+          };
+        },
+      } as never,
+      source: {} as never,
+      invalidation: { async admit() {} },
+      statements: {} as never,
+    });
+
+    expect(resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: { ...input.record.semantic, sourceDependencies: [] },
+      },
+    })).rejects.toThrow("authority storage failed");
   });
 
   test("fails closed on cyclic successor metadata", async () => {
@@ -427,7 +1289,7 @@ describe("exact grounded dependency loss", () => {
         recordRef: "record:remaining",
       }],
     });
-    expect(rewriteInput).toEqual({
+    expect(rewriteInput).toMatchObject({
       remainingSupportStatements: ["The surviving record statement."],
     });
   });
@@ -514,7 +1376,7 @@ describe("exact grounded dependency loss", () => {
         { kind: "source", logicalSourceRef: dependency.logicalSourceRef },
       ],
     });
-    expect(rewriteInput).toEqual({
+    expect(rewriteInput).toMatchObject({
       remainingSupportStatements: [
         "Postgres won because of durable queries and managed hosting.",
         "Exact source support.",

@@ -204,6 +204,71 @@ describe("same-Room durable semantic composition", () => {
     expect(appliedPlan).toMatchObject({ applicationPlanToken: planned });
   });
 
+  test.each([
+    {
+      failure: "dependency cycle",
+      decision: { status: "unavailable", evidence: { kind: "dependency_cycle" } },
+      expected: { failureCode: "candidate_unavailable", failureDetail: "candidate_selection_invalid" },
+    },
+    {
+      failure: "invalid model output",
+      decision: { status: "invalid_model_output" },
+      expected: { failureCode: "invalid_model_output" },
+    },
+  ] as const)("reports the specific dependency rewrite failure for $failure", async ({ decision, expected }) => {
+    const predecessor = record("record:changed", "A cyclic derived Record.");
+    const composition = new SameRoomDurableSemanticComposition({
+      repository: {
+        read: () => Promise.resolve({ status: "available", record: predecessor }),
+      } as never,
+      readiness: {} as never,
+      bindings: {
+        resolveWork: () => Promise.resolve({
+          readBindingRef: "read:parent",
+          invocationAudience: {
+            humanRefs: ["human:a"],
+            includesPublicBoundary: false,
+          },
+        }),
+        resolve: () => Promise.resolve({
+          status: "available",
+          binding: {
+            roomAnchorRef: "room:one",
+            invocationAudience: {
+              humanRefs: ["human:a"],
+              includesPublicBoundary: false,
+            },
+            readBindingRef: "read:parent",
+            searchBindingRef: "search:parent",
+            publicationBindingRef: "publish:parent",
+          },
+        }),
+      },
+      organizerNeighbors: {} as never,
+      memories: {} as never,
+      model: {} as never,
+      dependencyLoss: {
+        resolve: () => Promise.resolve(decision),
+      },
+      proposals: {} as never,
+    });
+
+    expect(await composition.resolveDependencyLoss({
+      claim: { ...claim, changeReason: "dependency_lost" },
+      idempotencyKey: "sleep-dependency-loss:record:changed:cycle",
+      budget: {
+        maxModelCalls: 2,
+        maxVisitedRecords: 16,
+        maxCreatedRecords: 1,
+        maxTraversalWork: 32,
+        maxStatementCharacters: 800,
+      },
+    })).toEqual({
+      status: "unavailable",
+      ...expected,
+    });
+  });
+
   test("plans the exact same-Room authored-source evidence used by dependency repair", async () => {
     const predecessor = {
       ...record("record:changed", "A parent with authored support."),
@@ -550,15 +615,15 @@ describe("same-Room durable semantic composition", () => {
                 humanRefs: ["human:one"],
                 includesPublicBoundary: false,
               },
-              readBindingRef: "read:one",
+              readBindingRef: "journal:namespace:access:ordinary:v1",
               searchBindingRef: "search:one",
-              publicationBindingRef: "publish:one",
+              publicationBindingRef: "journal:namespace:origin:ordinary:v1",
             },
           };
         },
         async resolveWork() {
           return {
-            readBindingRef: "read:one",
+            readBindingRef: "journal:namespace:access:ordinary:v1",
             invocationAudience: {
               humanRefs: ["human:one"],
               includesPublicBoundary: false,
@@ -629,7 +694,7 @@ describe("same-Room durable semantic composition", () => {
                 logicalSourceRef: "memory:authored",
                 observedRevision: "4",
                 observedContentFingerprint: "sha256:memory",
-                terminalAuthorityLeafHandle: "namespace:one",
+                terminalAuthorityLeafHandle: "origin",
                 authorityBearing: true,
               },
             }],
@@ -643,6 +708,9 @@ describe("same-Room durable semantic composition", () => {
         async augment(input) {
           expect(input.queryEmbedding).toBe(QUERY_EMBEDDING);
           expect(input.sameRoomCandidates).toHaveLength(2);
+          expect(input.sameRoomPlanInputs.find(row => row.kind === "source")?.read).toEqual({
+            namespaceRef: "origin", bindingRef: "journal:namespace:origin:ordinary:v1",
+          });
           expect(input.authorityParentSeeds).toEqual([{
             recordRef: "record:external-parent-seed",
             score: 0.89,

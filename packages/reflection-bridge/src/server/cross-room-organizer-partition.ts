@@ -170,12 +170,15 @@ function candidatePlanCoordinate(
     : { ...coordinate, role: "candidate" };
 }
 
+function coordinateForBatch(coordinate: CrossRoomInputCoordinate): string {
+  return JSON.stringify(candidatePlanCoordinate(coordinate));
+}
+
 function samePlanCoordinateIgnoringRole(
   left: CrossRoomInputCoordinate,
   right: CrossRoomInputCoordinate,
 ): boolean {
-  return JSON.stringify(candidatePlanCoordinate(left))
-    === JSON.stringify(candidatePlanCoordinate(right));
+  return coordinateForBatch(left) === coordinateForBatch(right);
 }
 
 function ownsChangedCoordinate(plan: CrossRoomCandidatePlan): boolean {
@@ -509,6 +512,9 @@ implements CrossRoomOrganizerPartitionPort {
       candidates,
       existingParents,
       applicationPlanToken: this.ports.codec.seal(plan),
+      batchCoordinates: new Map(plan.inputs.map(coordinate => [
+        planCoordinateIdentity(coordinate), coordinateForBatch(coordinate),
+      ])),
       unsupportedAuthorityShapes: discovered.metrics.unsupportedAuthorityShapes,
       authorityParentsResolved: discovered.metrics.authorityParentsResolved,
       authorityParentsSkipped: discovered.metrics.authorityParentsSkipped,

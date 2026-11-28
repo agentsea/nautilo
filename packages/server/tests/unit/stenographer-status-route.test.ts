@@ -175,10 +175,63 @@ describe("GET /api/admin/stenographer-status", () => {
     expect(queryStatus).toHaveBeenCalledTimes(1);
     const input = queryStatus.mock.calls[0]?.[0] as StenographerStatusQueryInput;
     expect(input.now.toISOString()).toBe(NOW.toISOString());
+    expect(input).not.toHaveProperty("includeRecovery");
+    expect(input).not.toHaveProperty("includeRecoverySources");
     expect(input.until.toISOString()).toBe(NOW.toISOString());
     expect(input.since.toISOString()).toBe(
       new Date(NOW.getTime() - STENOGRAPHER_STATUS_WINDOW_MS).toISOString(),
     );
+  });
+
+  test("exposes durable unknown outcomes when the client opts in", async () => {
+    const { app: recoveryApp } = buildApp({
+      queryStatus: async input => ({
+        ...statusFixture(),
+        ...(input.includeRecovery ? { unresolvedProviderOutcomes: 1 } : {}),
+      }),
+    });
+    const response = await recoveryApp.inject({
+      method: "GET", url: "/api/admin/stenographer-status?recovery=1",
+      headers: { "x-test-user": AUTHORIZED },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ unresolvedProviderOutcomes: 1 });
+  });
+
+  test("exposes stale recovery sources only with both recovery opt-ins", async () => {
+    const { app: recoveryApp, queryStatus } = buildApp({
+      queryStatus: async () => ({
+        ...statusFixture(),
+        staleAuthorizedSourceRooms: 2,
+      }),
+    });
+
+    const legacyResponse = await recoveryApp.inject({
+      method: "GET", url: "/api/admin/stenographer-status?recovery=1",
+      headers: { "x-test-user": AUTHORIZED },
+    });
+    expect(legacyResponse.statusCode).toBe(200);
+    expect(legacyResponse.json()).not.toHaveProperty("staleAuthorizedSourceRooms");
+    expect(queryStatus.mock.calls[0]?.[0]).not.toHaveProperty("includeRecoverySources");
+
+    const sourcesOnlyResponse = await recoveryApp.inject({
+      method: "GET", url: "/api/admin/stenographer-status?sources=1",
+      headers: { "x-test-user": AUTHORIZED },
+    });
+    expect(sourcesOnlyResponse.statusCode).toBe(200);
+    expect(sourcesOnlyResponse.json()).not.toHaveProperty("staleAuthorizedSourceRooms");
+    expect(queryStatus.mock.calls[1]?.[0]).not.toHaveProperty("includeRecoverySources");
+
+    const optedInResponse = await recoveryApp.inject({
+      method: "GET", url: "/api/admin/stenographer-status?recovery=1&sources=1",
+      headers: { "x-test-user": AUTHORIZED },
+    });
+    expect(optedInResponse.statusCode).toBe(200);
+    expect(optedInResponse.json()).toMatchObject({ staleAuthorizedSourceRooms: 2 });
+    expect(queryStatus.mock.calls[2]?.[0]).toMatchObject({
+      includeRecovery: true,
+      includeRecoverySources: true,
+    });
   });
 
   test("rejects non-contract identity/content fields from the repository", async () => {

@@ -59,7 +59,10 @@ test("startup recovery continues through pages while preserving active turns and
       scans.push(query);
       return { orderBy: () => ({ limit: async () => pages.shift() ?? [] }) };
     } }) }),
-    update: () => ({ set: () => ({ where: async (query: SQL) => { updates.push(query); } }) }),
+    update: () => ({ set: () => ({ where: (query: SQL) => ({ returning: async () => {
+      updates.push(query);
+      return [{ id: "updated" }];
+    } }) }) }),
   };
   const result = await recoverMemoryReviewTurnsAtStartup({
     db: db as never, pageSize: 2, bootCutoff: new Date("2026-09-05T10:00:00Z"),

@@ -137,6 +137,10 @@ export const llmUsageEvents = pgTable(
     index("idx_llm_usage_occurred_at").on(table.occurredAt),
     index("idx_llm_usage_user_id").on(table.userId),
     index("idx_llm_usage_model").on(table.model),
+    // Recovery joins a bounded set of operation IDs to historical wire attempts.
+    // Hash equality also handles long IDs without a variable-size btree key.
+    index("idx_llm_usage_operation_id").using("hash", sql`(${table.metadata}->>'operationId')`)
+      .where(sql`(${table.metadata}->>'operationId') IS NOT NULL`),
     index("idx_llm_usage_call_type").on(table.callType),
     index("idx_llm_usage_provider").on(table.provider),
     index("idx_llm_usage_funding_kind").on(table.fundingKind),

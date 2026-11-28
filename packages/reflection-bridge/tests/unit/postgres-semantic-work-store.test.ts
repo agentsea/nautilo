@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
 
-import type { DurableSleepClaim } from "@nautilo/reflection";
+import {
+  DurableSleepOrganizationUnavailableError,
+  type DurableSleepClaim,
+} from "@nautilo/reflection";
 import type { DurableRecordPublication } from "@nautilo/reflection/durable";
 
 import {
   admitSemanticWorkWithinTransaction,
   createHmacRecordSemanticCommitmentPort,
+  manualRecoveryConnectedFamilyRoots,
   PostgresSemanticWorkStore,
+  reflectionManualRecoveryFamilyKey,
 } from "../../src/server/postgres-semantic-work-store";
 import {
   verifyRecordProductPostgresHandle,
@@ -90,6 +95,234 @@ async function verifiedConnection(
 }
 
 describe("PostgreSQL semantic work commitments and admission", () => {
+  test("keeps a contended manual recovery family held without advisory locks", async () => {
+    const now = new Date("2026-11-27T10:05:00.000Z");
+    const observedThrough = new Date(now.getTime() - 1_000);
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("from reflection_record_semantic_work inner join reflection_records")) {
+        const binding = {
+          version: 1,
+          kind: "service",
+          role: "memoryReflection",
+          modelId: "surplus:synthetic-model",
+          inputCommitment: `hmac-sha256:${"W".repeat(43)}`,
+        };
+        const rows = [
+          {
+            record_id: "record:a", accepted_model_binding: binding,
+            manual_recovery_id: null, family_key: "binding:shared",
+            binding_key: "binding:shared", eligible: true,
+          },
+          {
+            record_id: "record:b", accepted_model_binding: binding,
+            manual_recovery_id: null, family_key: "binding:shared",
+            binding_key: "binding:shared", eligible: true,
+          },
+          {
+            record_id: "record:c",
+            accepted_model_binding: null,
+            manual_recovery_id: "11111111-1111-4111-8111-111111111111",
+            family_key: "recovery:11111111-1111-4111-8111-111111111111",
+            binding_key: null,
+            eligible: true,
+          },
+          {
+            record_id: "record:d",
+            accepted_model_binding: null,
+            manual_recovery_id: "11111111-1111-4111-8111-111111111111",
+            family_key: "recovery:11111111-1111-4111-8111-111111111111",
+            binding_key: null,
+            eligible: true,
+          },
+        ];
+        return (normalized.includes("for update") ? [rows[0], rows[2]] : rows) as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(25)),
+      clock: () => now,
+    });
+
+    expect(await store.requestManualProviderRecovery({
+      now,
+      observedThrough,
+      authorizedBy: "operator:one",
+      modelId: "surplus:synthetic-model",
+    })).toEqual({ queued: 0, held: 4 });
+    expect(normalizedSql(value.queries[0]!.statement)).not.toContain("for update");
+    expect(normalizedSql(value.queries[2]!.statement)).toContain(
+      "for update of reflection_record_semantic_work skip locked",
+    );
+    expect(value.queries.every(query => !query.statement.includes("pg_advisory"))).toBeTrue();
+  });
+
+  test("holds both observed families when a lock-time binding changed", async () => {
+    const now = new Date("2026-11-27T10:05:30.000Z");
+    const observedThrough = new Date(now.getTime() - 1_000);
+    const binding = (marker: string) => ({
+      version: 1,
+      kind: "service",
+      role: "memoryReflection",
+      modelId: "surplus:synthetic-model",
+      inputCommitment: `hmac-sha256:${marker.repeat(43)}`,
+    });
+    const before = binding("X");
+    const after = binding("Y");
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("from reflection_record_semantic_work inner join reflection_records")) {
+        return (normalized.includes("for update")
+          ? [
+              {
+                record_id: "record:a", accepted_model_binding: after,
+                manual_recovery_id: null, family_key: "binding:after",
+              },
+              {
+                record_id: "record:b", accepted_model_binding: before,
+                manual_recovery_id: null, family_key: "binding:before",
+              },
+            ]
+          : [
+              {
+                record_id: "record:a", accepted_model_binding: before,
+                manual_recovery_id: null, family_key: "binding:before",
+                binding_key: "binding:before", eligible: true,
+              },
+              {
+                record_id: "record:b", accepted_model_binding: before,
+                manual_recovery_id: null, family_key: "binding:before",
+                binding_key: "binding:before", eligible: true,
+              },
+            ]) as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(29)),
+      clock: () => now,
+    });
+
+    expect(await store.requestManualProviderRecovery({
+      now,
+      observedThrough,
+      authorizedBy: "operator:one",
+      modelId: "surplus:synthetic-model",
+    })).toEqual({ queued: 0, held: 2 });
+    expect(value.queries).toHaveLength(3);
+  });
+
+  test("binds each manual recovery candidate set as one PostgreSQL array", async () => {
+    const now = new Date("2026-11-27T10:06:00.000Z");
+    const observedThrough = new Date(now.getTime() - 1_000);
+    const recordRef = "record:large-set-control";
+    const row = {
+      record_id: recordRef,
+      generation: 8,
+      completed_generation: 0,
+      change_reason: "dependency_lost",
+      stage: "organization",
+      accepted_model_binding: null,
+      accepted_model_binding_generation: null,
+      organizer_proposal_checkpoint: null,
+      manual_recovery_id: null,
+      manual_recovery_source_generation: null,
+      manual_recovery_service_model_id: null,
+      manual_recovery_spent_at: null,
+      updated_at: observedThrough,
+      state: "quarantined",
+      completion_outcome: null,
+      failure_code: "candidate_unavailable",
+      failure_detail: "candidate_selection_invalid",
+      lifecycle: "current",
+      disposition: "available",
+    };
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("from reflection_record_semantic_work inner join reflection_records")) {
+        return [row] as unknown as Row[];
+      }
+      if (normalized.includes("from reflection_record_publications")
+        || normalized.includes("from reflection_record_authority_reconciliations")) {
+        return [] as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(28)),
+      clock: () => now,
+    });
+
+    expect(await store.requestManualProviderRecovery({
+      now,
+      observedThrough,
+      authorizedBy: "operator:one",
+      modelId: "surplus:synthetic-model",
+    })).toEqual({ queued: 0, held: 1 });
+    const boundedPredicates = value.queries.slice(1, 4);
+    expect(boundedPredicates).toHaveLength(3);
+    for (const query of boundedPredicates) {
+      expect(normalizedSql(query.statement)).toContain("= any($1::text[])");
+      expect(query.parameters?.[0]).toEqual([recordRef]);
+    }
+  });
+
+  test("cohorts exact service operations but isolates legacy service rows", () => {
+    const binding = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "model:old",
+      inputCommitment: `hmac-sha256:${"L".repeat(43)}`,
+    };
+    expect(reflectionManualRecoveryFamilyKey({ recordRef: "record:a", binding }))
+      .toBe(reflectionManualRecoveryFamilyKey({ recordRef: "record:b", binding }));
+    expect(reflectionManualRecoveryFamilyKey({
+      recordRef: "record:a",
+      binding: { kind: "service", modelId: "model:legacy" },
+    })).not.toBe(reflectionManualRecoveryFamilyKey({
+      recordRef: "record:b",
+      binding: { kind: "service", modelId: "model:legacy" },
+    }));
+    expect(reflectionManualRecoveryFamilyKey({
+      recordRef: "record:human",
+      binding: { ...binding, kind: "human" },
+    })).toBeNull();
+  });
+
+  test("finds a connected paid family larger than the JavaScript call stack", () => {
+    const rowCount = 70_000;
+    const binding = (index: number) => ({
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "model:old",
+      inputCommitment: `hmac-sha256:${String(index).padStart(43, "A")}`,
+    });
+    const rows = Array.from({ length: rowCount }, (_, index) => ({
+      record_id: `record:${index}`,
+      manual_recovery_id: `recovery:${index % 2 === 0 ? index : index - 1}`,
+      accepted_model_binding: binding(index === 0
+        ? 0
+        : index % 2 === 0 ? index - 1 : index),
+    }));
+
+    const roots = manualRecoveryConnectedFamilyRoots(rows);
+
+    expect(roots.size).toBe(rowCount);
+    expect(new Set(roots.values()).size).toBe(1);
+  });
+
   test("uses domain-separated stable HMACs without exposing source identity", () => {
     const commitments = createHmacRecordSemanticCommitmentPort(
       new Uint8Array(32).fill(17),
@@ -153,6 +386,21 @@ describe("PostgreSQL semantic work commitments and admission", () => {
       processingGeneration: 1,
       policyVersion: "room-anchor-v1",
     }));
+    const manualRecovery = commitments.manualRecovery({
+      recordRef: "record:one",
+      sourceGeneration: 4,
+      recoveryId: "11111111-1111-4111-8111-111111111111",
+      authorizedBy: "22222222-2222-4222-8222-222222222222",
+      observedThrough: new Date("2026-11-27T10:00:00.000Z"),
+    });
+    expect(manualRecovery).not.toEqual(commitments.manualRecovery({
+      recordRef: "record:one",
+      sourceGeneration: 4,
+      recoveryId: "11111111-1111-4111-8111-111111111111",
+      authorizedBy: "22222222-2222-4222-8222-222222222222",
+      observedThrough: new Date("2026-11-27T10:00:00.001Z"),
+    }));
+    expect(manualRecovery).not.toEqual(projectionRefresh);
     const parents = [
       { recordRef: "record:parent-b", processingGeneration: 2 },
       { recordRef: "record:parent-a", processingGeneration: 1 },
@@ -308,7 +556,7 @@ describe("PostgreSQL semantic work leases", () => {
           mode === "fresh" ? null : mode === "resumed" || index === 0
             ? accepted
             : null,
-        )) as unknown as Row[];
+        )).reverse() as unknown as Row[];
       }
       if (normalized.startsWith("update reflection_record_semantic_work")) {
         return [{ record_id: "updated" }] as unknown as Row[];
@@ -405,6 +653,232 @@ describe("PostgreSQL semantic work leases", () => {
     }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(Error);
     expect(resolves).toBe(0);
+    expect(value.queries).toHaveLength(1);
+  });
+
+  test("binds manual service recovery without spending its provider attempt", async () => {
+    const now = new Date("2026-11-27T10:03:00.000Z");
+    const claim: DurableSleepClaim = {
+      logicalObjectRef: "record:manual",
+      recordRef: "record:manual",
+      generation: 2,
+      changeReason: "created",
+      stage: "organization",
+      leaseToken: "33333333-3333-4333-8333-333333333333",
+    };
+    const fresh = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "model:configuration-after-click",
+      inputCommitment: `hmac-sha256:${"R".repeat(43)}`,
+    };
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(statement: string) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.startsWith("select")) return [{
+        record_id: claim.recordRef,
+        generation: claim.generation,
+        claim_generation: claim.generation,
+        lease_token: claim.leaseToken,
+        lease_expires_at: new Date(now.getTime() + 30_000),
+        state: "claimed",
+        stage: claim.stage,
+        change_reason: claim.changeReason,
+        accepted_model_binding: null,
+        accepted_model_binding_generation: null,
+        manual_recovery_id: "44444444-4444-4444-8444-444444444444",
+        manual_recovery_source_generation: 1,
+        manual_recovery_service_model_id: "model:configured-at-click",
+        manual_recovery_spent_at: null,
+        disposition: "available",
+      }] as unknown as Row[];
+      if (normalized.startsWith("update reflection_record_semantic_work")) {
+        return [{ record_id: claim.recordRef }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(21)),
+      clock: () => now,
+    });
+
+    expect(await store.bindAcceptedModelOperation([claim], async () => fresh)).toEqual({
+      ...fresh,
+      modelId: "model:configured-at-click",
+    });
+    const update = value.queries.find(query =>
+      normalizedSql(query.statement).startsWith("update reflection_record_semantic_work"));
+    expect(normalizedSql(update?.statement ?? "")).not.toContain("manual_recovery_spent_at =");
+    expect(JSON.stringify(update?.parameters)).toContain(fresh.inputCommitment);
+    expect(JSON.stringify(update?.parameters)).toContain("model:configured-at-click");
+  });
+
+  test.each([
+    "openai:gpt-5.6-sol",
+    "venice:llama-3.3-70b",
+    "surplus:synthetic-model",
+  ])("consumes one exact manual %s attempt only at the provider boundary", async modelId => {
+    const now = new Date("2026-11-27T10:04:00.000Z");
+    const claim: DurableSleepClaim = {
+      logicalObjectRef: `record:${modelId}`,
+      recordRef: `record:${modelId}`,
+      generation: 4,
+      changeReason: "created",
+      stage: "organization",
+      leaseToken: `lease:${modelId}`,
+      operatorAuthorizedAttempt: true,
+    };
+    const binding = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId,
+      inputCommitment: `hmac-sha256:${"S".repeat(43)}`,
+    };
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(statement: string) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.startsWith("select")) return [{
+        record_id: claim.recordRef,
+        generation: claim.generation,
+        claim_generation: claim.generation,
+        lease_token: claim.leaseToken,
+        lease_expires_at: new Date(now.getTime() + 30_000),
+        state: "claimed",
+        stage: claim.stage,
+        change_reason: claim.changeReason,
+        disposition: "available",
+        accepted_model_binding: binding,
+        accepted_model_binding_generation: claim.generation,
+        manual_recovery_id: "77777777-7777-4777-8777-777777777777",
+        manual_recovery_source_generation: claim.generation - 1,
+        manual_recovery_service_model_id: modelId,
+        manual_recovery_spent_at: null,
+      }] as unknown as Row[];
+      if (normalized.startsWith("update reflection_record_semantic_work")) {
+        return [{ record_id: claim.recordRef }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(23)),
+      clock: () => now,
+    });
+
+    expect(await store.consumeManualProviderAttempt([claim])).toBe("consumed");
+    const update = value.queries.find(query =>
+      normalizedSql(query.statement).startsWith("update reflection_record_semantic_work"));
+    expect(normalizedSql(update?.statement ?? "")).toContain("manual_recovery_spent_at");
+    expect(normalizedSql(update?.statement ?? "")).toContain("manual_recovery_source_generation");
+  });
+
+  test.each([
+    ["an existing stamped receipt", 3, new Date("2026-11-27T10:03:59.000Z")],
+    ["a same-generation conditional marker", 4, null],
+  ] as const)("blocks %s before provider dispatch", async (_label, sourceGeneration, spentAt) => {
+    const now = new Date("2026-11-27T10:04:00.000Z");
+    const claim: DurableSleepClaim = {
+      logicalObjectRef: "record:blocked",
+      recordRef: "record:blocked",
+      generation: 4,
+      changeReason: "created",
+      stage: "organization",
+      leaseToken: "lease:blocked",
+      operatorAuthorizedAttempt: true,
+    };
+    const binding = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "openai:gpt-5.6-sol",
+      inputCommitment: `hmac-sha256:${"T".repeat(43)}`,
+    };
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(statement: string) => {
+      if (!normalizedSql(statement).startsWith("select")) {
+        throw new Error(`unexpected SQL: ${statement}`);
+      }
+      return [{
+        record_id: claim.recordRef,
+        generation: claim.generation,
+        claim_generation: claim.generation,
+        lease_token: claim.leaseToken,
+        lease_expires_at: new Date(now.getTime() + 30_000),
+        state: "claimed",
+        stage: claim.stage,
+        change_reason: claim.changeReason,
+        disposition: "available",
+        accepted_model_binding: binding,
+        accepted_model_binding_generation: claim.generation,
+        manual_recovery_id: "88888888-8888-4888-8888-888888888888",
+        manual_recovery_source_generation: sourceGeneration,
+        manual_recovery_service_model_id: binding.modelId,
+        manual_recovery_spent_at: spentAt,
+      }] as unknown as Row[];
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(24)),
+      clock: () => now,
+    });
+
+    expect(await store.consumeManualProviderAttempt([claim])).toBe("blocked");
+    expect(value.queries).toHaveLength(1);
+  });
+
+  test("does not turn an operator click into Human-funded Reflection authority", async () => {
+    const now = new Date("2026-11-27T10:03:00.000Z");
+    const claim: DurableSleepClaim = {
+      logicalObjectRef: "record:human",
+      recordRef: "record:human",
+      generation: 2,
+      changeReason: "created",
+      stage: "organization",
+      leaseToken: "55555555-5555-4555-8555-555555555555",
+    };
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(statement: string) => {
+      if (!normalizedSql(statement).startsWith("select")) {
+        throw new Error(`unexpected SQL: ${statement}`);
+      }
+      return [{
+        record_id: claim.recordRef,
+        generation: claim.generation,
+        claim_generation: claim.generation,
+        lease_token: claim.leaseToken,
+        lease_expires_at: new Date(now.getTime() + 30_000),
+        state: "claimed",
+        stage: claim.stage,
+        change_reason: claim.changeReason,
+        accepted_model_binding: null,
+        accepted_model_binding_generation: null,
+        manual_recovery_id: "66666666-6666-4666-8666-666666666666",
+        manual_recovery_source_generation: 1,
+        manual_recovery_service_model_id: "model:configured-at-click",
+        manual_recovery_spent_at: null,
+        disposition: "available",
+      }] as unknown as Row[];
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(22)),
+      clock: () => now,
+    });
+
+    expect(store.bindAcceptedModelOperation([claim], async () => ({
+      version: 1,
+      kind: "human",
+      role: "memoryReflection",
+      modelId: "model:human",
+      inputCommitment: `hmac-sha256:${"P".repeat(43)}`,
+      humanUserId: "human:one",
+      preferenceRevision: 1,
+      funding: {
+        kind: "personal",
+        providerRoute: "openai",
+        credentialId: "77777777-7777-4777-8777-777777777777",
+        credentialRevision: 1,
+      },
+    }))).rejects.toBeInstanceOf(DurableSleepOrganizationUnavailableError);
     expect(value.queries).toHaveLength(1);
   });
 
@@ -995,6 +1469,42 @@ describe("PostgreSQL semantic work leases", () => {
     expect(pause.parameters).toContain(new Date(retryAt).toISOString());
   });
 
+  test("pauses transient churn through the configured scheduler retry delay", async () => {
+    const now = new Date("2026-08-14T10:00:00.000Z");
+    const retryMilliseconds = 12_345;
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => normalizedSql(statement).includes("returning record_id")
+      ? [{ record_id: "record:changing-candidate" }] as unknown as Row[]
+      : [] as Row[]);
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(
+        new Uint8Array(32).fill(3),
+      ),
+      clock: () => now,
+      retryMilliseconds,
+    });
+    const changingClaim: DurableSleepClaim = {
+      logicalObjectRef: "record:changing-candidate",
+      generation: 3,
+      recordRef: "record:changing-candidate",
+      changeReason: "revised",
+      stage: "organization",
+      leaseToken: "11111111-1111-4111-8111-111111111111",
+    };
+
+    expect(await store.pause({
+      claim: changingClaim,
+      retryAfterSchedulerDelay: true,
+      waitingReason: "capacity",
+    })).toMatchObject({ status: "accepted" });
+
+    expect(value.queries[0]?.parameters).toContain(
+      new Date(now.getTime() + retryMilliseconds).toISOString(),
+    );
+  });
+
   test("rejects malformed or non-future pause timestamps before SQL mutation", async () => {
     const now = new Date("2026-08-14T10:00:00.000Z");
     const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>() =>
@@ -1344,6 +1854,53 @@ describe("PostgreSQL semantic work leases", () => {
     expect(value.queries.find((query) =>
       normalizedSql(query.statement).includes("returning state")
     )?.parameters).toContain("unexpected_candidate_stage_failure");
+  });
+
+  test("holds a stale saved publication for an explicitly authorized fresh calculation", async () => {
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.startsWith("select") && normalized.includes("manual_recovery_id")) {
+        return [];
+      }
+      if (normalized.startsWith("update reflection_record_semantic_work")
+        && normalized.includes("returning state")) {
+        return [{ state: "quarantined" }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(4)),
+      clock: () => new Date("2026-11-27T10:00:00.000Z"),
+    });
+    expect(await store.defer({
+      claim: {
+        logicalObjectRef: "record:stale-plan",
+        generation: 3,
+        recordRef: "record:stale-plan",
+        changeReason: "created",
+        stage: "organization",
+        leaseToken: "11111111-1111-4111-8111-111111111111",
+      },
+      failureCode: "publication_unavailable",
+      failureDetail: "publication_plan_stale",
+      requiresFreshCalculation: true,
+    })).toEqual({ status: "quarantined" });
+    const query = value.queries.find((candidate) =>
+      normalizedSql(candidate.statement).includes("returning state")
+    );
+    const statement = normalizedSql(query?.statement ?? "");
+    expect(statement).toContain("state = case when true then 'quarantined'");
+    expect(statement).toContain("recover_after = 'infinity'::timestamptz");
+    expect(statement).toContain("organizer_proposal_checkpoint =");
+    expect(statement).toContain("organizer_proposal_resumed_at =");
+    expect(statement).toContain("recovery_policy_version =");
+    expect(query?.parameters).toContain("publication_plan_stale");
+    expect(normalizedSql(value.queries[0]!.statement)).toContain("for update");
+    expect(value.queries.every(candidate => !candidate.statement.includes("pg_advisory")))
+      .toBeTrue();
   });
 
   test.each([
@@ -2021,15 +2578,33 @@ describe("PostgreSQL semantic work repair and publication", () => {
             record_id: "record:a",
             processing_generation: 2,
             structural_height: 0,
+            work_record_id: null,
           },
           {
             record_id: "record:b",
             processing_generation: 1,
             structural_height: 1,
+            work_record_id: null,
           },
         ] as unknown as Row[];
       }
+      if (statement.includes("pg_try_advisory_xact_lock")) {
+        return [{ locked: true }] as unknown as Row[];
+      }
       if (statement.includes("pg_advisory_xact_lock")) return [];
+      if (normalized.includes("from reflection_records where")) {
+        return [{
+          processing_generation: 2,
+          structural_height: 0,
+          lifecycle: "current",
+          disposition: "available",
+        }] as unknown as Row[];
+      }
+      if (normalized.includes("select state, change_reason, completion_outcome")
+        && normalized.includes("for update")) return [];
+      if (normalized.includes("select record_id from reflection_record_semantic_work")) {
+        return [];
+      }
       if (normalized.includes("select assigned_generation")) return [];
       if (normalized.includes("select generation") && normalized.includes("for update")) return [];
       if (normalized.includes("insert into reflection_record_semantic_work_admissions")) return [];
@@ -2051,7 +2626,70 @@ describe("PostgreSQL semantic work repair and publication", () => {
     expect(bootstrapSql?.statement).not.toContain("payload");
     expect(normalizedSql(bootstrapSql?.statement ?? "")).toContain("state =");
     expect(normalizedSql(bootstrapSql?.statement ?? "")).toContain("change_reason <>");
+    expect(normalizedSql(bootstrapSql?.statement ?? ""))
+      .toContain("completion_outcome <>");
     expect(bootstrapSql?.parameters).toContain(2);
+  });
+
+  test("rechecks bootstrap candidates under lock and preserves newer provider holds", async () => {
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+      parameters?: readonly RecordProductPostgresScalar[],
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("left join reflection_record_semantic_work")) {
+        return ["record:unknown", "record:manual"].map(record_id => ({
+          record_id,
+          processing_generation: 5,
+          structural_height: 1,
+          work_record_id: record_id,
+        })) as unknown as Row[];
+      }
+      if (statement.includes("pg_try_advisory_xact_lock")) {
+        return [{ locked: true }] as unknown as Row[];
+      }
+      if (statement.includes("pg_advisory_xact_lock")) return [];
+      if (normalized.includes("from reflection_records where")) {
+        return [{
+          processing_generation: 5,
+          structural_height: 1,
+          lifecycle: "current",
+          disposition: "available",
+        }] as unknown as Row[];
+      }
+      if (normalized.includes("select state, change_reason, completion_outcome")
+        && normalized.includes("for update")) {
+        return [{
+          state: parameters?.includes("record:unknown") ? "complete" : "due",
+          change_reason: "dependency_lost",
+          completion_outcome: parameters?.includes("record:unknown")
+            ? "provider_outcome_unknown"
+            : null,
+        }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(
+        new Uint8Array(32).fill(27),
+      ),
+    });
+
+    expect(await store.bootstrapPage({ limit: 2 })).toEqual({ admitted: 0 });
+    expect(value.queries.filter(query =>
+      query.statement.includes("pg_try_advisory_xact_lock")
+    )).toHaveLength(2);
+    expect(value.queries.filter(query =>
+      normalizedSql(query.statement).includes(
+        "select state, change_reason, completion_outcome",
+      ) && normalizedSql(query.statement).includes("for update")
+    )).toHaveLength(2);
+    expect(value.queries.some(query =>
+      normalizedSql(query.statement).includes(
+        "insert into reflection_record_semantic_work_admissions",
+      )
+    )).toBeFalse();
   });
 
   test("admits completed missing Room projections and restages outstanding organization work", async () => {
@@ -2126,7 +2764,7 @@ describe("PostgreSQL semantic work repair and publication", () => {
     expect(updates.some((query) => query.parameters?.includes("search_projection"))).toBe(true);
   });
 
-  test("re-admits obsolete candidate quarantines once per policy receipt", async () => {
+  test("re-admits only undispatched candidate-record-change quarantines when requested", async () => {
     const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
       statement: string,
     ) => {
@@ -2146,6 +2784,15 @@ describe("PostgreSQL semantic work repair and publication", () => {
         ] as unknown as Row[];
       }
       if (statement.includes("pg_advisory_xact_lock")) return [];
+      if (normalized.includes("accepted_model_binding")
+        && normalized.includes("for update")) {
+        return [{
+          state: "quarantined",
+          failure_code: "candidate_unavailable",
+          failure_detail: "candidate_record_changed",
+          accepted_model_binding: null,
+        }] as unknown as Row[];
+      }
       if (normalized.includes("select assigned_generation")) return [];
       if (normalized.includes("select generation") && normalized.includes("for update")) {
         return [{
@@ -2166,12 +2813,62 @@ describe("PostgreSQL semantic work repair and publication", () => {
     expect(await store.recoverCandidatePolicyQuarantinesPage({
       limit: 1,
       policyVersion: "authority-aware-parent-normalization-v1",
+      undispatchedCandidateRecordChangedOnly: true,
     })).toEqual({ admitted: 1, continuation: "record:a" });
     const recoverySql = value.queries.find((query) =>
       normalizedSql(query.statement).includes("inner join reflection_record_semantic_work")
     );
     expect(recoverySql?.statement).not.toContain("payload");
     expect(normalizedSql(recoverySql?.statement ?? "")).toContain("failure_code =");
+    expect(normalizedSql(recoverySql?.statement ?? "")).toContain("failure_detail =");
+    expect(normalizedSql(recoverySql?.statement ?? "")).toContain(
+      "accepted_model_binding is null",
+    );
     expect(recoverySql?.parameters).toContain("candidate_unavailable");
+    expect(recoverySql?.parameters).toContain("candidate_record_changed");
+  });
+
+  test("skips a candidate quarantine reclaimed after the repair scan", async () => {
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("inner join reflection_record_semantic_work")) {
+        return [{
+          record_id: "record:reclaimed",
+          processing_generation: 2,
+          structural_height: 0,
+        }] as unknown as Row[];
+      }
+      if (statement.includes("pg_advisory_xact_lock")) return [];
+      if (normalized.includes("accepted_model_binding")
+        && normalized.includes("for update")) {
+        return [{
+          state: "claimed",
+          failure_code: null,
+          failure_detail: null,
+          accepted_model_binding: { kind: "service", modelId: "retained" },
+        }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(
+        new Uint8Array(32).fill(9),
+      ),
+      clock: () => new Date("2026-08-21T10:00:00.000Z"),
+    });
+
+    expect(await store.recoverCandidatePolicyQuarantinesPage({
+      limit: 1,
+      policyVersion: "authority-aware-parent-normalization-v1",
+      undispatchedCandidateRecordChangedOnly: true,
+    })).toEqual({ admitted: 0 });
+    expect(value.queries.some((query) =>
+      normalizedSql(query.statement).includes(
+        "insert into reflection_record_semantic_work_admissions",
+      )
+    )).toBe(false);
   });
 });

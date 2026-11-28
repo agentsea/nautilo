@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, jsonb, pgPolicy, pgRole, pgTable, uniqueIndex, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { check, index, integer, jsonb, pgPolicy, pgRole, pgTable, uniqueIndex, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 import { sessions } from "./sessions";
 import { agents } from "./agents";
 import { rooms } from "./rooms";
@@ -36,6 +36,8 @@ export const memoryReviewTurns = pgTable("memory_review_turns", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   unique("memory_review_turn_identity").on(table.sessionId, table.agentId, table.ownerId, table.accessScope, table.turnId),
+  index("memory_review_open_scope_order").on(table.sessionId, table.agentId, table.ownerId,
+    table.accessScope, table.firstMessageId, table.id).where(sql`${table.receiptId} IS NULL`),
   index("memory_review_pending_idx").on(table.state, table.retryAt, table.firstMessageId),
   pgPolicy("memory_review_turns_product", { for: "all", to: pgRole("nautilo").existing(), using: sql`true`, withCheck: sql`true` }),
   pgPolicy("memory_review_turns_agent", { for: "all", to: pgRole("nautilo_agent").existing(),
@@ -45,6 +47,31 @@ export const memoryReviewTurns = pgTable("memory_review_turns", {
     withCheck: sql`${table.agentId} = app_current_agent_id() AND (
       EXISTS (SELECT 1 FROM actors a WHERE a.id::text = ${table.actorId} AND a.owner_id = app_current_user_id() AND a.kind = 'user')
       OR EXISTS (SELECT 1 FROM sessions s WHERE s.id = ${table.sessionId} AND s.owner_id = app_current_user_id()))`,
+  }),
+]).enableRLS();
+
+/** Server-only permission for one new attempt on an exact, previously blocked review. */
+export const memoryReviewModelRecoveries = pgTable("memory_review_model_recoveries", {
+  workId: uuid("work_id").primaryKey(),
+  headTurnId: uuid("head_turn_id").notNull().references(() => memoryReviewTurns.id, { onDelete: "cascade" }),
+  authorizedBy: uuid("authorized_by").notNull(),
+  authorizedAt: timestamp("authorized_at", { withTimezone: true }).notNull(),
+  blockedAttemptId: uuid("blocked_attempt_id").notNull(),
+  turnIds: uuid("turn_ids").array().notNull(),
+  /** SHA-256 over the exact transcript row identities/revisions authorized by the Human. */
+  sourceRevisionFingerprint: text("source_revision_fingerprint"),
+  /** A legacy, missing, or changed source snapshot is a durable hold until a fresh click. */
+  sourceChangedAt: timestamp("source_changed_at", { withTimezone: true }),
+  spentAt: timestamp("spent_at", { withTimezone: true }),
+  recoveryAttemptId: uuid("recovery_attempt_id"),
+}, (table) => [
+  index("memory_review_model_recovery_head_idx").on(table.headTurnId),
+  check("memory_review_model_recovery_source_fingerprint", sql`
+    ${table.sourceRevisionFingerprint} is null
+    or ${table.sourceRevisionFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
+  pgPolicy("memory_review_model_recoveries_product", {
+    for: "all", to: pgRole("nautilo").existing(), using: sql`true`, withCheck: sql`true`,
   }),
 ]).enableRLS();
 
@@ -70,6 +97,6 @@ export const memoryReviewReceipts = pgTable("memory_review_receipts", {
   pgPolicy("memory_review_receipts_product", { for: "all", to: pgRole("nautilo").existing(), using: sql`true`, withCheck: sql`true` }),
   pgPolicy("memory_review_receipts_agent", { for: "all", to: pgRole("nautilo_agent").existing(),
     using: sql`${table.agentId} = app_current_agent_id() AND EXISTS (SELECT 1 FROM actors a WHERE a.id::text = ${table.actorId} AND a.owner_id = app_current_user_id() AND a.kind = 'user')`,
-    withCheck: sql`${table.agentId} = app_current_agent_id() AND EXISTS (SELECT 1 FROM actors a WHERE a.id::text = ${table.actorId} AND a.owner_id = app_current_user_id() AND a.kind = 'user')`,
+    withCheck: sql`${table.outcome} = 'published' AND ${table.agentId} = app_current_agent_id() AND EXISTS (SELECT 1 FROM actors a WHERE a.id::text = ${table.actorId} AND a.owner_id = app_current_user_id() AND a.kind = 'user')`,
   }),
 ]).enableRLS();

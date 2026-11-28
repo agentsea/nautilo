@@ -1,5 +1,5 @@
 import type { StenographerAdminStatus } from "@nautilo/types";
-import { and, desc, eq, gt, gte, isNotNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNotNull, lte, notExists, sql } from "drizzle-orm";
 import type { DirectDatabase } from "../config/direct-database";
 import { getSharedDirectDb } from "../config/database";
 import {
@@ -16,6 +16,8 @@ interface CurrentRow {
   retrying_rooms: number | string;
   due_rooms: number | string;
   stale_leases: number | string;
+  unresolved_provider_outcomes: number | string;
+  manual_invalid_output_holds: number | string;
   oldest_overdue_ms: number | string;
   maximum_failure_count: number | string;
   rebuilding_rooms: number | string;
@@ -31,6 +33,9 @@ interface JournalCompactionRow {
   processing_rooms: number | string;
   retrying_rooms: number | string;
   stale_leases: number | string;
+  unresolved_provider_outcomes: number | string;
+  manual_invalid_output_holds: number | string;
+  stale_authorized_source_rooms: number | string;
   oldest_overdue_ms: number | string;
   maximum_failure_count: number | string;
   last_completed_at: string | Date | null;
@@ -154,6 +159,33 @@ export function buildStenographerRecentFailuresQuery(
         isNotNull(roomJournalBatches.errorCode),
       ),
     );
+  const currentAuthorityDeferrals = db
+    .select({
+      stage:
+        sql<"extraction" | "compaction">`'extraction'::text`,
+      error_code: roomJournalState.lastExtractionErrorCode,
+      occurred_at: roomJournalState.lastExtractionErrorAt,
+      attempt_count: roomJournalState.extractionFailureCount,
+      model_id: sql<string | null>`NULL::text`,
+    })
+    .from(roomJournalState)
+    .where(
+      and(
+        eq(roomJournalState.lastExtractionErrorCode, "input_authority_unavailable"),
+        gt(roomJournalState.extractionFailureCount, 0),
+        gte(roomJournalState.lastExtractionErrorAt, input.since),
+        lte(roomJournalState.lastExtractionErrorAt, input.until),
+        notExists(
+          db.select({ one: sql`1` })
+            .from(roomJournalBatches)
+            .where(and(
+              eq(roomJournalBatches.roomId, roomJournalState.roomId),
+              eq(roomJournalBatches.errorCode, roomJournalState.lastExtractionErrorCode),
+              eq(roomJournalBatches.lastErrorAt, roomJournalState.lastExtractionErrorAt),
+            )),
+        ),
+      ),
+    );
   const compactionFailures = db
     .select({
       stage:
@@ -174,6 +206,7 @@ export function buildStenographerRecentFailuresQuery(
     );
 
   return extractionFailures
+    .unionAll(currentAuthorityDeferrals)
     .unionAll(compactionFailures)
     .orderBy(({ occurred_at }) => desc(occurred_at))
     .limit(5);
@@ -184,6 +217,8 @@ export async function queryStenographerAdminStatus(
     now: Date;
     since: Date;
     until: Date;
+    includeRecovery?: boolean;
+    includeRecoverySources?: boolean;
   },
   db: DirectDatabase = getSharedDirectDb(),
 ): Promise<StenographerAdminStatus> {
@@ -198,7 +233,10 @@ export async function queryStenographerAdminStatus(
           rjs.lease_expires_at,
           rjs.extraction_retry_after,
           rjs.extraction_failure_count,
+          rjs.last_extraction_error_code,
+          rjs.last_extraction_error_at,
           rjs.historical_backfill_status,
+          rjs.rebuild_generation,
           rjs.rebuild_requested_at
         FROM rooms r
         INNER JOIN room_journal_state rjs ON rjs.room_id = r.id
@@ -297,7 +335,10 @@ export async function queryStenographerAdminStatus(
           er.lease_expires_at,
           er.extraction_retry_after,
           er.extraction_failure_count,
+          er.last_extraction_error_code,
+          er.last_extraction_error_at,
           er.historical_backfill_status,
+          er.rebuild_generation,
           er.rebuild_requested_at
         FROM eligible_rooms er
         LEFT JOIN source_stats ss ON ss.room_id = er.room_id
@@ -357,6 +398,33 @@ export async function queryStenographerAdminStatus(
         ), 0)::bigint AS oldest_overdue_ms,
         COALESCE(MAX(extraction_failure_count), 0)::integer AS maximum_failure_count,
         COUNT(*) FILTER (
+          WHERE last_extraction_error_code = 'provider_outcome_unknown'
+            AND extraction_failure_count > 0
+        )::integer
+          AS unresolved_provider_outcomes,
+        COUNT(*) FILTER (
+          WHERE last_extraction_error_code = 'invalid_output'
+            AND extraction_failure_count > 0
+            AND EXISTS (
+                SELECT 1
+                FROM room_journal_batches rjb
+                INNER JOIN room_journal_model_recoveries rjmr
+                  ON rjmr.room_id = rjb.room_id
+                  AND rjmr.work_kind = 'extraction'
+                  AND rjmr.work_id = rjb.id::text
+                  AND rjmr.rebuild_generation = classified.rebuild_generation
+                  AND rjmr.target_model_id = rjb.last_error_model_id
+                  AND rjmr.claimed_at = rjb.started_at
+                  AND rjmr.claim_lease_token IS NOT NULL
+                  AND rjmr.spent_at IS NOT NULL
+                  AND rjmr.spent_at <= rjb.last_error_at
+                WHERE rjb.room_id = classified.room_id
+                  AND rjb.status = 'failed'
+                  AND rjb.error_code = 'invalid_output'
+                  AND rjb.last_error_at = classified.last_extraction_error_at
+            )
+        )::integer AS manual_invalid_output_holds,
+        COUNT(*) FILTER (
           WHERE rebuild_requested_at IS NOT NULL
         )::integer AS rebuilding_rooms,
         COUNT(*) FILTER (
@@ -375,6 +443,8 @@ export async function queryStenographerAdminStatus(
     retrying_rooms: 0,
     due_rooms: 0,
     stale_leases: 0,
+    unresolved_provider_outcomes: 0,
+    manual_invalid_output_holds: 0,
     oldest_overdue_ms: 0,
     maximum_failure_count: 0,
     rebuilding_rooms: 0,
@@ -454,6 +524,53 @@ export async function queryStenographerAdminStatus(
               OR compaction_lease_expires_at <= ${now}
             )
         )::integer AS stale_leases,
+        COUNT(*) FILTER (
+          WHERE last_compaction_error_code = 'provider_outcome_unknown'
+            AND compaction_failure_count > 0
+        )::integer
+          AS unresolved_provider_outcomes,
+        COUNT(*) FILTER (
+          WHERE last_compaction_error_code = 'invalid_output'
+            AND compaction_failure_count > 0
+            AND EXISTS (
+                SELECT 1
+                FROM room_journal_model_recoveries rjmr
+                WHERE rjmr.room_id = compaction_state.room_id
+                  AND rjmr.work_kind = 'compaction'
+                  AND rjmr.work_id = compaction_state.compaction_accepted_plan->>'operationId'
+                  AND rjmr.rebuild_generation = compaction_state.rebuild_generation
+                  AND rjmr.observed_attempt = compaction_state.last_compaction_error_attempt - 1
+                  AND rjmr.target_model_id = compaction_state.last_compaction_error_model_id
+                  AND rjmr.claim_lease_token IS NOT NULL
+                  AND rjmr.spent_at IS NOT NULL
+                  AND rjmr.spent_at <= compaction_state.last_compaction_error_at
+            )
+        )::integer AS manual_invalid_output_holds,
+        COUNT(DISTINCT compaction_state.room_id) FILTER (
+          WHERE ${input.includeRecovery === true && input.includeRecoverySources === true}
+            AND EXISTS (
+            SELECT 1
+            FROM room_journal_model_recoveries stale_recovery
+            WHERE stale_recovery.room_id = compaction_state.room_id
+              AND stale_recovery.work_kind = 'compaction'
+              AND stale_recovery.rebuild_generation = compaction_state.rebuild_generation
+              AND stale_recovery.observed_attempt = compaction_state.last_compaction_error_attempt
+              AND stale_recovery.observed_failure_at = compaction_state.last_compaction_error_at
+              AND stale_recovery.source_changed_at IS NOT NULL
+              AND stale_recovery.spent_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM room_journal_model_recoveries replacement_recovery
+                WHERE replacement_recovery.room_id = stale_recovery.room_id
+                  AND replacement_recovery.work_kind = 'compaction'
+                  AND replacement_recovery.rebuild_generation = stale_recovery.rebuild_generation
+                  AND replacement_recovery.observed_attempt = stale_recovery.observed_attempt
+                  AND replacement_recovery.observed_failure_at = stale_recovery.observed_failure_at
+                  AND replacement_recovery.fresh_service_inputs = true
+                  AND replacement_recovery.source_changed_at IS NULL
+              )
+          )
+        )::integer AS stale_authorized_source_rooms,
         COALESCE(MAX(
           CASE WHEN category = 'awaiting'
             THEN EXTRACT(EPOCH FROM (${now} - compaction_due_at)) * 1000
@@ -472,10 +589,14 @@ export async function queryStenographerAdminStatus(
   )) as FailureRow[];
 
   const extractionDegraded =
+    n(current.unresolved_provider_outcomes) > 0 ||
+    n(current.manual_invalid_output_holds) > 0 ||
     n(current.stale_leases) > 0 ||
     n(current.maximum_failure_count) >= 3 ||
     n(current.oldest_overdue_ms) >= 5 * 60_000;
   const compactionDegraded =
+    n(journalCompaction.unresolved_provider_outcomes) > 0 ||
+    n(journalCompaction.manual_invalid_output_holds) > 0 ||
     n(journalCompaction.stale_leases) > 0 ||
     n(journalCompaction.maximum_failure_count) >= 3 ||
     n(journalCompaction.oldest_overdue_ms) >= 5 * 60_000;
@@ -498,6 +619,10 @@ export async function queryStenographerAdminStatus(
         : delayed
           ? "delayed"
           : "healthy",
+    ...(input.includeRecovery === true ? { unresolvedProviderOutcomes: n(current.unresolved_provider_outcomes) + n(journalCompaction.unresolved_provider_outcomes) } : {}),
+    ...(input.includeRecovery === true && input.includeRecoverySources === true
+      ? { staleAuthorizedSourceRooms: n(journalCompaction.stale_authorized_source_rooms) }
+      : {}),
     current: {
       eligibleRooms: n(current.eligible_rooms),
       caughtUpRooms: n(current.caught_up_rooms),

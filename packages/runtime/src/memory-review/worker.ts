@@ -24,8 +24,9 @@ import { runBackgroundModelInvocation } from "../background-processing/model-inv
 export interface MemoryReviewClaim {
   workId: string;
   attemptId: string;
-  priorAttemptIds?: readonly string[];
-  knownNonusableAttemptIds?: readonly string[];
+  modelRecovery?: "authorized" | "spent";
+  /** One service-funded retry bound to a newly effective configured model. */
+  automaticModelRecovery?: true;
   ownerId: string;
   actorId: string;
   agentId: string;
@@ -48,7 +49,10 @@ export interface MemoryReviewInput {
 
 export interface AdmittedMemoryReviewModel {
   modelId: string;
-  invokeModel: NonNullable<MemoryReviewOptions["invokeModel"]>;
+  invokeModel(
+    input: Parameters<NonNullable<MemoryReviewOptions["invokeModel"]>>[0],
+    beforeProviderDispatch?: () => Promise<void>,
+  ): ReturnType<NonNullable<MemoryReviewOptions["invokeModel"]>>;
   assertCurrent(): Promise<void>;
   onModelExposure?: NonNullable<MemoryReviewOptions["onModelExposure"]>;
   resolveMemoryExposureDependencies?: NonNullable<MemoryReviewOptions["resolveMemoryExposureDependencies"]>;
@@ -71,13 +75,17 @@ function retryableMemoryFailure(reason: string): boolean {
 }
 
 export interface MemoryReviewRepository {
-  claimNext(input: { now: Date }): Promise<MemoryReviewClaim | null>;
+  claimNext(input: { now: Date; currentServiceModelId?: string }): Promise<MemoryReviewClaim | null>;
   assertCurrent(claim: MemoryReviewClaim): Promise<void>;
   load(claim: MemoryReviewClaim): Promise<MemoryReviewInput>;
   modelReplaySafety?(claim: MemoryReviewClaim): Promise<"allow" | "block_unknown">;
+  beginModelRecoveryDispatch?(claim: MemoryReviewClaim, signal?: AbortSignal): Promise<void>;
   /** Freezes the first service model accepted for every coalesced turn. */
   getAcceptedModelOperation?(claim: MemoryReviewClaim): Promise<MemoryOperationBinding | null>;
-  bindModelOperation?(claim: MemoryReviewClaim, resolve: (legacyServiceModelId?: string) => Promise<MemoryOperationBinding>): Promise<MemoryOperationBinding>;
+  bindModelOperation?(claim: MemoryReviewClaim, resolve: (
+    legacyServiceModelId?: string,
+    previousServiceBinding?: Extract<MemoryOperationBinding, { kind: "service" }>,
+  ) => Promise<MemoryOperationBinding>): Promise<MemoryOperationBinding>;
   bindServiceModel?(claim: MemoryReviewClaim, resolveModelId: () => string): Promise<string>;
   /** Unknown outcome must remain non-executable until its durable receipt resolves. */
   reconcile(claim: MemoryReviewClaim): Promise<MemoryReviewPublicationState>;
@@ -102,7 +110,8 @@ export interface MemoryReviewWorkerDeps {
   admitModel?(claim: MemoryReviewClaim, input: MemoryReviewInput, assertCurrent: () => Promise<void>): Promise<AdmittedMemoryReviewModel | null>;
   openAccess?(identity: BackgroundAttemptIdentity, signal: AbortSignal, claim: MemoryReviewClaim): Promise<BackgroundAccessSession>;
   prepare?: typeof prepareMemoryReview;
-  invokeModel?: NonNullable<MemoryReviewOptions["invokeModel"]>;
+  /** Test/provider seam; production adapters must invoke the final dispatch guard. */
+  invokeModel?: AdmittedMemoryReviewModel["invokeModel"];
   observeAttempt?(observation: BackgroundAttemptObservation): void | Promise<void>;
   now?: () => Date;
   onError?(phase: "poll" | "effects", error: unknown): void;
@@ -153,7 +162,11 @@ export class MemoryReviewWorker {
     try { await this.deps.repository.drainEffects({ now: this.now() }); }
     catch (error) { this.reportError("effects", error); }
     if (this.stopped || !(await this.deps.checkAvailable())) return;
-    const claim = await this.deps.repository.claimNext({ now: this.now() });
+    const currentServiceModelId = this.currentServiceModelId();
+    const claim = await this.deps.repository.claimNext({
+      now: this.now(),
+      ...(currentServiceModelId === undefined ? {} : { currentServiceModelId }),
+    });
     if (!claim) return;
     let phase: MemoryReviewPhase = "reconciliation";
     const startedAt = performance.now();
@@ -195,10 +208,26 @@ export class MemoryReviewWorker {
             : null;
           const admitted: AdmittedMemoryReviewModel = admittedByPort
             ?? await this.admitServiceModel(claim, () => context.assertCurrent());
+          let recoveryDispatch: Promise<void> | undefined;
+          const beforeProviderDispatch = async () => {
+            await context.assertCurrent();
+            await admitted.assertCurrent();
+            context.signal.throwIfAborted();
+            if (claim.modelRecovery === "authorized") {
+              if (!this.deps.repository.beginModelRecoveryDispatch) {
+                throw new Error("Memory recovery dispatch admission is unavailable");
+              }
+              recoveryDispatch ??= this.deps.repository.beginModelRecoveryDispatch(
+                claim,
+                context.signal,
+              );
+              await recoveryDispatch;
+            }
+          };
           const invokeModel: NonNullable<MemoryReviewOptions["invokeModel"]> = async (invocation) => {
             await context.assertCurrent();
             await admitted.assertCurrent();
-            return admitted.invokeModel(invocation);
+            return admitted.invokeModel(invocation, beforeProviderDispatch);
           };
           const prepared: MemoryReviewPreparation = await (this.deps.prepare ?? prepareMemoryReview)(input.messages, {
             memoryAccessEnvelope: input.memoryAccessEnvelope,
@@ -249,7 +278,22 @@ export class MemoryReviewWorker {
   }
 
   private fail(claim: MemoryReviewClaim, phase: MemoryReviewPhase, reason: string, retryable: boolean): Promise<void> {
-    return this.deps.repository.fail({ claim, phase, reason, retryable, now: this.now() });
+    return this.deps.repository.fail({
+      claim, phase, reason,
+      retryable: retryable && claim.modelRecovery === undefined && claim.automaticModelRecovery !== true,
+      now: this.now(),
+    });
+  }
+
+  private currentServiceModelId(): string | undefined {
+    try {
+      const resolved = this.deps.resolveModelId?.().trim();
+      return resolved || undefined;
+    } catch {
+      // Personal claims can remain runnable while the service selection is
+      // unavailable. Service admission records its own typed failure later.
+      return undefined;
+    }
   }
 
   private async admitServiceModel(claim: MemoryReviewClaim, assertCurrent: () => Promise<void>) {
@@ -273,8 +317,8 @@ export class MemoryReviewWorker {
     return resolved;
   }
 
-  private createServiceInvoker(claim: MemoryReviewClaim): NonNullable<MemoryReviewOptions["invokeModel"]> {
-    return (input) => runBackgroundModelInvocation({
+  private createServiceInvoker(claim: MemoryReviewClaim): AdmittedMemoryReviewModel["invokeModel"] {
+    return (input, beforeProviderDispatch) => runBackgroundModelInvocation({
       usage: {
         callType: "memory_review", userId: null, roomId: claim.roomId,
         metadata: { workId: claim.workId, attemptId: claim.attemptId, agentId: claim.agentId },
@@ -282,7 +326,7 @@ export class MemoryReviewWorker {
       ...(input.signal === undefined ? {} : { signal: input.signal }),
       invoke: async (signal) => {
         const invocation = { ...input, ...(signal === undefined ? {} : { signal }) };
-        if (this.deps.invokeModel) return this.deps.invokeModel(invocation);
+        if (this.deps.invokeModel) return this.deps.invokeModel(invocation, beforeProviderDispatch);
         const { response } = await invokeChatModelWithFallback(
           invocation.messages,
           invocation.tools,
@@ -295,6 +339,7 @@ export class MemoryReviewWorker {
             serverFundedService: "shared_memory_maintenance",
             modelFallbackMode: "none",
             sameModelRetryMode: "none",
+            ...(beforeProviderDispatch === undefined ? {} : { beforeProviderDispatch }),
             useOpenAIResponsesApi: true,
             reasoningOutput: invocation.modelId.startsWith("openai:"),
           },

@@ -12,12 +12,19 @@ export interface OpenMemoryOperationInput {
   readonly operationKey: string;
   readonly dependencies: () => Promise<readonly DurableModelExposureDependency[] | undefined>;
   readonly ports: PersonalMemoryEvidencePort;
+  readonly readHistoricalOrganizerPredecessor?: PersonalMemoryEvidencePort["readRecord"];
+  readonly readRetiredJournalPredecessor?: PersonalMemoryEvidencePort["readRecord"];
   readonly budget: OrganizerEvidenceBudget;
   readonly commitmentKey: Uint8Array;
+  /** A replacement compaction must qualify for service funding on every recheck. */
+  readonly requireCurrentServicePayer?: boolean;
   /** Reflection batches retain one accepted payer/model across proven claim subsets. */
   readonly bindingScope?: "exact_operation" | "claim_family";
-  /** CAS owner returns its existing binding without evaluating resolve again. */
-  readonly bind: (resolve: (legacyServiceModelId?: string) => Promise<MemoryOperationBinding>) => Promise<MemoryOperationBinding>;
+  /** CAS owner normally returns its binding; explicit manual service recovery may request a trusted rebind. */
+  readonly bind: (resolve: (
+    legacyServiceModelId?: string,
+    previousServiceBinding?: Extract<MemoryOperationBinding, { kind: "service" }>,
+  ) => Promise<MemoryOperationBinding>) => Promise<MemoryOperationBinding>;
   readonly assertCurrent: () => Promise<void>;
   readonly resolveServiceModel: () => string;
   readonly openHumanSession?: (humanUserId: string, recheck: () => Promise<void>) => CapabilityFundingSession;
@@ -31,13 +38,47 @@ export interface AdmittedMemoryOperation {
   assertExposure(dependencies: readonly DurableModelExposureDependency[] | undefined): Promise<void>;
 }
 
+/** Explicit manual service recovery proved that its accepted evidence changed. */
+export class MemoryReviewRecoveryEvidenceChangedError extends PersonalMemoryEvidenceChangedError {
+  override name = "MemoryReviewRecoveryEvidenceChangedError";
+}
+
+type HistoricalMemoryEvidenceReaders = Pick<
+  OpenMemoryOperationInput,
+  "readHistoricalOrganizerPredecessor" | "readRetiredJournalPredecessor"
+>;
+
+/** Protected questions own their exact evidence port and never cross-open ordinary history. */
+export function ordinaryHistoricalMemoryEvidenceReaders(
+  protectedEvidence: PersonalMemoryEvidencePort | undefined,
+  readers: HistoricalMemoryEvidenceReaders,
+): Partial<HistoricalMemoryEvidenceReaders> {
+  return protectedEvidence === undefined ? readers : {};
+}
+
 /** Personal eligibility is proved from actual inputs, never a Room owner. */
 export async function openMemoryOperation(input: OpenMemoryOperationInput): Promise<AdmittedMemoryOperation> {
   if (input.commitmentKey.byteLength < 32) throw new TypeError("Memory commitment key is unavailable");
   await input.assertCurrent();
   const dependencies = await input.dependencies();
-  const classify = (current: readonly DurableModelExposureDependency[] | undefined) =>
-    classifyPersonalMemoryEvidence({ dependencies: current, ports: input.ports, budget: input.budget });
+  const classify = async (current: readonly DurableModelExposureDependency[] | undefined) => {
+    const payer = await classifyPersonalMemoryEvidence({
+      dependencies: current,
+      ports: input.ports,
+      budget: input.budget,
+      ...(input.readHistoricalOrganizerPredecessor === undefined ? {} : {
+        readHistoricalOrganizerPredecessor:
+          input.readHistoricalOrganizerPredecessor,
+      }),
+      ...(input.readRetiredJournalPredecessor === undefined ? {} : {
+        readRetiredJournalPredecessor: input.readRetiredJournalPredecessor,
+      }),
+    });
+    if (input.requireCurrentServicePayer && (!current?.length || payer.kind !== "service")) {
+      throw new PersonalMemoryEvidenceChangedError();
+    }
+    return payer;
+  };
   const initial = await classify(dependencies);
   const commitment = (current: readonly DurableModelExposureDependency[] | undefined): string =>
     `hmac-sha256:${createHmac("sha256", input.commitmentKey).update(JSON.stringify([
@@ -45,15 +86,36 @@ export async function openMemoryOperation(input: OpenMemoryOperationInput): Prom
     ])).digest("base64url")}`;
   const inputCommitment = commitment(dependencies);
   const openSession = input.openHumanSession ?? createCapabilityFundingSession;
+  let manualServiceRecovery = false;
+  let reboundServiceOperation = false;
   const recheckEvidence = async () => {
     await input.assertCurrent();
     const current = await input.dependencies();
-    if (commitment(current) !== inputCommitment) throw new PersonalMemoryEvidenceChangedError();
-    assertSamePersonalMemoryEvidence(initial, await classify(current));
+    try {
+      if (commitment(current) !== inputCommitment) throw new PersonalMemoryEvidenceChangedError();
+      const payer = await classify(current);
+      assertSamePersonalMemoryEvidence(initial, payer);
+      if (reboundServiceOperation && (!current?.length || payer.kind !== "service")) {
+        throw new PersonalMemoryEvidenceChangedError();
+      }
+    } catch (error) {
+      if (manualServiceRecovery && error instanceof PersonalMemoryEvidenceChangedError) {
+        throw new MemoryReviewRecoveryEvidenceChangedError();
+      }
+      throw error;
+    }
   };
   let resolverEvaluated = false;
-  const binding = parseMemoryOperationBinding(await input.bind(async (legacyServiceModelId) => {
+  const binding = parseMemoryOperationBinding(await input.bind(async (legacyServiceModelId, previousServiceBinding) => {
     resolverEvaluated = true;
+    if (previousServiceBinding !== undefined) {
+      manualServiceRecovery = true;
+      if (previousServiceBinding.role !== input.role) throw new MemoryReviewRecoveryEvidenceChangedError();
+      if (previousServiceBinding.inputCommitment === inputCommitment) return previousServiceBinding;
+      if (!dependencies?.length || initial.kind !== "service") throw new MemoryReviewRecoveryEvidenceChangedError();
+      reboundServiceOperation = true;
+      return { ...previousServiceBinding, inputCommitment };
+    }
     if (initial.kind === "service" || legacyServiceModelId !== undefined) return {
       version: 1, kind: "service", role: input.role, modelId: legacyServiceModelId ?? input.resolveServiceModel(), inputCommitment,
     };
@@ -86,8 +148,9 @@ export async function openMemoryOperation(input: OpenMemoryOperationInput): Prom
     assertCurrent,
     async assertExposure(exposure) {
       await assertCurrent();
-      if (binding.kind === "human") assertSamePersonalMemoryEvidence(
-        { kind: "human", humanUserId: binding.humanUserId }, await classify(exposure));
+      if (input.requireCurrentServicePayer || reboundServiceOperation || binding.kind === "human") {
+        assertSamePersonalMemoryEvidence(initial, await classify(exposure));
+      }
     },
   };
 }

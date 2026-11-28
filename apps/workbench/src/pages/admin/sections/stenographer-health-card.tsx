@@ -262,6 +262,12 @@ function StatusBody({
         </div>
       </div>
 
+      {(status.unresolvedProviderOutcomes ?? 0) > 0 ? (
+        <p className="mt-4 text-xs text-error">
+          Unresolved provider outcomes ({status.unresolvedProviderOutcomes})
+        </p>
+      ) : null}
+
       {status.recentFailures.length > 0 ? (
         <div className="mt-4 border-t border-border/60 pt-3">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">
@@ -321,7 +327,7 @@ export function StenographerHealthCard() {
     setLoading(true);
     setError(null);
     const [statusResult, protectionResult] = await Promise.allSettled([
-      apiClient.admin.stenographerStatus.get(),
+      apiClient.admin.stenographerStatus.get({ includeRecovery: true }),
       apiClient.admin.stenographerStatus.getProtection(),
     ]);
     if (statusResult.status === "fulfilled") {

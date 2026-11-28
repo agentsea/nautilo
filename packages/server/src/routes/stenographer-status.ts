@@ -13,6 +13,8 @@ export interface StenographerStatusQueryInput {
   now: Date;
   since: Date;
   until: Date;
+  includeRecovery?: boolean;
+  includeRecoverySources?: boolean;
 }
 
 /**
@@ -75,15 +77,26 @@ export function stenographerStatusRoutes(
     });
   const now = deps.now ?? (() => new Date());
 
-  app.get("/api/admin/stenographer-status", async (request, reply) => {
+  app.get<{ Querystring: { recovery?: string; sources?: string } }>("/api/admin/stenographer-status", async (request, reply) => {
     if (!(await requireServerSettingsRead(request, reply, hasCapability))) return;
 
+    const includeRecovery = request.query.recovery === "1";
+    const includeRecoverySources = includeRecovery && request.query.sources === "1";
     const until = now();
     const since = new Date(until.getTime() - STENOGRAPHER_STATUS_WINDOW_MS);
 
     try {
-      const status = await deps.queryStatus({ now: until, since, until });
-      return reply.send(stenographerAdminStatusSchema.parse(status));
+      const status = await deps.queryStatus({
+        now: until,
+        since,
+        until,
+        ...(includeRecovery ? { includeRecovery } : {}),
+        ...(includeRecoverySources ? { includeRecoverySources } : {}),
+      });
+      const parsed = stenographerAdminStatusSchema.parse(status);
+      if (includeRecoverySources) return reply.send(parsed);
+      const { staleAuthorizedSourceRooms: _staleAuthorizedSourceRooms, ...legacyStatus } = parsed;
+      return reply.send(legacyStatus);
     } catch {
       return reply.code(500).send({ error: "Stenographer status unavailable" });
     }

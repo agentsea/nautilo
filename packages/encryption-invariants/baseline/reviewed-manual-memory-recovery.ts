@@ -1,0 +1,321 @@
+import type { EncryptionCoverageEntry } from "../src/model";
+import type { DtoDeclaration } from "../src/node/dto-inventory";
+
+const GET_RECOVERY_ROUTE =
+  "http:request_response:GET /api/admin/memory-recovery";
+const POST_RECOVERY_ROUTE =
+  "http:request_response:POST /api/admin/memory-recovery";
+
+const REVIEWED_MANUAL_RECOVERY_DTO_LOCATORS = new Set([
+  GET_RECOVERY_ROUTE,
+  POST_RECOVERY_ROUTE,
+  "http:request_response:GET /api/admin/reflection-status",
+  "http:request_response:GET /api/admin/stenographer-status",
+]);
+
+export const REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS:
+  readonly DtoDeclaration[] = [
+  {
+    observationId:
+      "wire.http.request.response.get.api.admin.memory.recovery.pmqz63",
+    locator: GET_RECOVERY_ROUTE,
+    structuralSignatures: [
+      "response.body:{error:string}",
+      "response.body:{run:{memory?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};observedThrough:string;reflection?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};requestId:string;stenographer?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"}}}",
+    ],
+    arbitraryPayloads: [],
+  },
+  {
+    observationId:
+      "wire.http.request.response.post.api.admin.memory.recovery.1sbu2fl",
+    locator: POST_RECOVERY_ROUTE,
+    structuralSignatures: [
+      "response.body:{error:string}",
+      "response.body:{memory?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};observedThrough:string;reflection?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};requestId:string;stenographer?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"}}",
+    ],
+    arbitraryPayloads: [],
+  },
+  {
+    observationId: "wire.http.request.response.get.api.admin.reflection.status.eqtoyg",
+    locator: "http:request_response:GET /api/admin/reflection-status",
+    structuralSignatures: [
+      "request.query:{recovery?:string}",
+      "response.body:{current:{backlog:number;checkpointed:number;claimed:number;complete:number;currentParentViolations:number;deferred:number;due:number;maximumAttempts:number;maximumRecoveryRound:number;oldestOverdueMs:number;quarantined:number;recoveryEligible:number;staleLeases:number;totalRecords:number};currentFailures:{attemptCount:number;errorCode:\"authority_unavailable\"|\"candidate_unavailable\"|\"embedding_unavailable\"|\"invalid_model_output\"|\"projection_unavailable\"|\"publication_unavailable\"|\"record_unavailable\"|\"retry_exhausted\"|\"unexpected_failure\";occurredAt:string;stage:\"authority_projection\"|\"organization\"|\"search_projection\"}[];generatedAt:string;health:\"degraded\"|\"delayed\"|\"healthy\";last24h:{completedWork:number;syntheticParentsCreated:number};lastCompletedAt?:string;nextRecoveryAt?:string;projections:{availableRecords:number;current:number;incompatible:number;pending:number};protectedAuthority?:{current:{awaitingEligibleDeviceAndKeys:string;awaitingRecipient:string;readyOrRunning:string;reconciliationPending:string;retirementPending:string;terminalOrStale:string;verifiedAuthority:string};dtoVersion:1;last24h:{terminalOrStale:string;verifiedAuthority:string};scope:\"authority_maintenance_only\"};providerSucceededResultMissing?:number;quarantinedByReason?:{invalidSelection:number;missingAuthority:number;stalePlan?:number;unavailableSource?:number};resumedFromSavedProposal?:number;scheduler:{amplification:\"normal\"|\"pressure\"|\"watch\";backlog:{oldestAgeMs:number;size:number};lastPoll?:{authorityElapsedMs:number;candidateElapsedMs:number;candidatesOpened:number;capacityOutcomes:number;claims:number;crossRoomCompletions:number;crossRoomPlans:number;databaseWork:number;deterministicNoChanges:number;elapsedMs:number;modelCalls:number;modelElapsedMs:number;modelFailures:number;noEffectiveAudience:number;protectedExecutionUnavailable:number;publicationElapsedMs:number;sameRoomCompletions:number;sameRoomPlans:number;searchProjectionElapsedMs:number;stalePlans:number;unsupportedAuthorityShapes:number};latency:{crossRoom:{candidate:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};endToEnd:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};model:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};publication:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};queue:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number}};sameRoom:{candidate:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};endToEnd:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};model:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};publication:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number};queue:{maximumMs:number;p50Ms:number;p90Ms:number;samples:number}}};nextEligiblePollAt?:string;pauseReason?:\"backlog_growth\"|\"elapsed_budget\"|\"recursive_amplification\"|\"repeated_failure\";recoveryIntervalMs:number;state:\"cooldown\"|\"disabled\"|\"pressure_paused\"|\"running\";window:{admitted:number;completed:number;created:number;polls:number}};stages:{authorityProjection:number;organization:number;searchProjection:number};unresolvedProviderOutcomes?:number;window:{since:string;until:string}}",
+      "response.body:{error:string}",
+    ],
+    arbitraryPayloads: [],
+  },
+  {
+    observationId: "wire.http.request.response.get.api.admin.stenographer.status.v9h5bb",
+    locator: "http:request_response:GET /api/admin/stenographer-status",
+    structuralSignatures: [
+      "request.query:{recovery?:string;sources?:string}",
+      "response.body:{compaction:{awaitingRooms:number;lastCompletedAt?:string;oldestOverdueMs:number;processingRooms:number;retryingRooms:number;staleLeases:number};current:{accumulatingRooms:number;caughtUpRooms:number;dueRooms:number;eligibleRooms:number;historicalCompletedRooms:number;historicalPendingRooms:number;oldestOverdueMs:number;processingRooms:number;rebuildingRooms:number;retryingRooms:number;staleLeases:number};generatedAt:string;health:\"degraded\"|\"delayed\"|\"healthy\";journal:{projectedBodyCodePointsMax?:number;projectedBodyCodePointsP50?:number;projectedBodyCodePointsP95?:number};last24h:{completedExtractionBatches:number;eventsWritten:number;extractionBatchesWithErrors:number;extractionDurationP50Ms?:number;extractionDurationP95Ms?:number;retriedExtractionBatches:number;zeroEventExtractionBatches:number};recentFailures:{attemptCount:number;errorCode:\"input_authority_unavailable\"|\"input_too_large\"|\"invalid_output\"|\"lease_lost\"|\"persistence\"|\"provider\"|\"provider_outcome_unknown\"|\"timeout\"|\"unknown\";modelId?:string;occurredAt:string;stage:\"compaction\"|\"extraction\"}[];unresolvedProviderOutcomes?:number;window:{since:string;until:string}}",
+      "response.body:{compaction:{awaitingRooms:number;lastCompletedAt?:string;oldestOverdueMs:number;processingRooms:number;retryingRooms:number;staleLeases:number};current:{accumulatingRooms:number;caughtUpRooms:number;dueRooms:number;eligibleRooms:number;historicalCompletedRooms:number;historicalPendingRooms:number;oldestOverdueMs:number;processingRooms:number;rebuildingRooms:number;retryingRooms:number;staleLeases:number};generatedAt:string;health:\"degraded\"|\"delayed\"|\"healthy\";journal:{projectedBodyCodePointsMax?:number;projectedBodyCodePointsP50?:number;projectedBodyCodePointsP95?:number};last24h:{completedExtractionBatches:number;eventsWritten:number;extractionBatchesWithErrors:number;extractionDurationP50Ms?:number;extractionDurationP95Ms?:number;retriedExtractionBatches:number;zeroEventExtractionBatches:number};recentFailures:{attemptCount:number;errorCode:\"input_authority_unavailable\"|\"input_too_large\"|\"invalid_output\"|\"lease_lost\"|\"persistence\"|\"provider\"|\"provider_outcome_unknown\"|\"timeout\"|\"unknown\";modelId?:string;occurredAt:string;stage:\"compaction\"|\"extraction\"}[];staleAuthorizedSourceRooms?:number;unresolvedProviderOutcomes?:number;window:{since:string;until:string}}",
+      "response.body:{error:string}",
+    ],
+    arbitraryPayloads: [],
+  },
+];
+
+export function reviewedManualRecoveryDtoReplacements(
+  declarations: readonly DtoDeclaration[],
+): readonly DtoDeclaration[] {
+  return [
+    ...declarations.filter((entry) =>
+      !REVIEWED_MANUAL_RECOVERY_DTO_LOCATORS.has(entry.locator)
+    ),
+    ...REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS,
+  ];
+}
+
+const RUN_TABLE = "public.memory_recovery_runs";
+const RUN_FIELDS = [
+  "authorized_by",
+  "id",
+  "memory",
+  "observed_through",
+  "reflection",
+  "stenographer",
+  "progress",
+] as const;
+
+const JOURNAL_TABLE = "public.room_journal_model_recoveries";
+const JOURNAL_FIELDS = [
+  "authorized_at",
+  "authorized_by",
+  "claim_lease_token",
+  "claimed_at",
+  "id",
+  "observed_attempt",
+  "observed_failure_at",
+  "observed_through",
+  "source_changed_at",
+  "replacement_input_digest",
+  "authorized_input_digest",
+  "fresh_service_inputs",
+  "rebuild_generation",
+  "room_id",
+  "source_batch_id",
+  "spent_at",
+  "target_model_id",
+  "work_id",
+  "work_kind",
+] as const;
+
+const REFLECTION_TABLE = "public.reflection_record_semantic_work";
+const REFLECTION_CHECKPOINT = `${REFLECTION_TABLE}.organizer_proposal_checkpoint`;
+const REFLECTION_FIELDS = [
+  "manual_recovery_authorized_at",
+  "manual_recovery_authorized_by",
+  "manual_recovery_id",
+  "manual_recovery_observed_through",
+  "manual_recovery_service_model_id",
+  "manual_recovery_source_generation",
+  "manual_recovery_spent_at",
+] as const;
+
+const SECURITY_TEST =
+  "packages/encryption-invariants/tests/integration/reviewed-manual-memory-recovery-security.test.ts";
+
+function metadataEntries(input: {
+  readonly id: string;
+  readonly table: string;
+  readonly fields: readonly string[];
+  readonly owner: string;
+  readonly readers: readonly string[];
+  readonly writers: readonly string[];
+  readonly retention: string;
+  readonly tests: readonly string[];
+  readonly reason: string;
+  readonly includeTable: boolean;
+}): readonly EncryptionCoverageEntry[] {
+  const locators = input.includeTable
+    ? [input.table, ...input.fields.map((field) => `${input.table}.${field}`)]
+    : input.fields.map((field) => `${input.table}.${field}`);
+  return locators.map((locator, index): EncryptionCoverageEntry => ({
+    id: `db.manual-memory-recovery.${input.id}.${index + 1}`,
+    surface: "db",
+    locator,
+    owner: input.owner,
+    readers: input.readers,
+    writers: input.writers,
+    migrationState: "not_applicable",
+    retention: input.retention,
+    testEvidence: [...input.tests, SECURITY_TEST],
+    classification: "bounded_metadata",
+    metadataAllowlist: locator === input.table
+      ? [...input.fields]
+      : [locator.slice(input.table.length + 1)],
+    plaintextReason: input.reason,
+  }));
+}
+
+export const REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE:
+  readonly EncryptionCoverageEntry[] = [
+  ...metadataEntries({
+    id: "run",
+    table: RUN_TABLE,
+    fields: RUN_FIELDS,
+    owner: "packages/server",
+    readers: ["packages/server/src/lib/manual-memory-recovery.ts"],
+    writers: ["packages/server/src/lib/manual-memory-recovery.ts"],
+    retention:
+      "Retained as an idempotent operator-request receipt and lane-result audit record until ordinary server data retirement.",
+    tests: [
+      "packages/server/tests/integration/manual-memory-recovery.integration.test.ts",
+      "packages/server/tests/unit/memory-status-route.test.ts",
+    ],
+    reason:
+      "The product-only run contains one request UUID, one operator UUID, an observation timestamp, three closed lane results containing only state and counts, and internal progress containing the click-time configured service-model identifier for each lane plus a servicing timestamp. It contains no prompt, Memory content, model output, provider response, credential, or cryptographic material.",
+    includeTable: true,
+  }),
+  ...metadataEntries({
+    id: "journal",
+    table: JOURNAL_TABLE,
+    fields: JOURNAL_FIELDS,
+    owner: "packages/runtime",
+    readers: [
+      "packages/runtime/src/stenographer/repository.ts",
+      "packages/server/src/lib/request-manual-journal-recovery.ts",
+      "packages/server/src/lib/stenographer-memory-funding.ts",
+    ],
+    writers: [
+      "packages/runtime/src/stenographer/repository.ts",
+      "packages/server/src/lib/request-manual-journal-recovery.ts",
+    ],
+    retention:
+      "Retained with the owning Journal work as authorization and consumption evidence; Room deletion cascades the receipt.",
+    tests: [
+      "packages/server/tests/integration/manual-journal-recovery.integration.test.ts",
+      "packages/server/tests/unit/request-manual-journal-recovery.test.ts",
+    ],
+    reason:
+      "The product-only receipt contains exact Journal work coordinates, attempt and rebuild counters, a configured model identifier, operator and lease UUIDs, lifecycle timestamps, a fresh-service-input flag, and fixed 64-hex SHA-256 equality commitments over the exact compaction input. The content-derived commitments can disclose repeat-input equality, are retained only to fence authorization to the reviewed input, and are never used as encryption or authentication keys. The receipt contains no Journal text, reversible model input, model output, provider response, credential, or cryptographic key material.",
+    includeTable: true,
+  }),
+  ...metadataEntries({
+    id: "reflection",
+    table: REFLECTION_TABLE,
+    fields: REFLECTION_FIELDS,
+    owner: "packages/reflection-bridge",
+    readers: [
+      "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts",
+    ],
+    writers: [
+      "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts",
+    ],
+    retention:
+      "Retained on the exact semantic-work generation as authorization and consumption evidence; later canonical admission clears the marker and Record deletion cascades the work row.",
+    tests: [
+      "packages/reflection-bridge/tests/unit/postgres-semantic-work-store.test.ts",
+      "packages/server/tests/integration/manual-reflection-recovery.integration.test.ts",
+    ],
+    reason:
+      "These fields contain one recovery UUID, one operator UUID, source-generation and configured-model coordinates, and observation, authorization, and consumption timestamps. They contain no Record payload, model input or output, provider response, credential, HMAC key, or commitment secret.",
+    includeTable: false,
+  }),
+  {
+    id: "db.manual-memory-recovery.reflection-organizer-checkpoint",
+    surface: "db",
+    locator: REFLECTION_CHECKPOINT,
+    owner: "packages/runtime",
+    readers: [
+      "packages/runtime/src/reflection/production-reflection-memory.ts",
+      "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts",
+    ],
+    writers: [
+      "packages/runtime/src/reflection/production-reflection-memory.ts",
+      "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts",
+    ],
+    migrationState: "ciphertext_only",
+    retention:
+      "Retained only on the owning ordinary semantic-work generation until completion, replacement admission, or a required fresh calculation clears it.",
+    testEvidence: [
+      "packages/reflection-bridge/tests/unit/authority-commitment.test.ts",
+      "packages/reflection-bridge/tests/unit/postgres-semantic-work-store.test.ts",
+      "packages/runtime/tests/integration/reflection-semantic-worker-liveness.integration.test.ts",
+      SECURITY_TEST,
+    ],
+    classification: "server_encrypted",
+    representationScope: "ordinary_only",
+    supportsEncryptedMode: false,
+    keyCustody: "server_instance_commitment_key",
+    keyDerivation:
+      "HMAC-SHA-256 with nautilo-reflection-organizer-proposal-v1 derives the checkpoint port key; SHA-256 with nautilo-reflection-authority-checkpoint-key-v1 derives the AES key.",
+    algorithm: "AES-256-GCM",
+    envelopeVersion: 1,
+    nonceBytes: 12,
+    authenticationTagBytes: 16,
+    additionalAuthenticatedData: "nautilo-reflection-authority-checkpoint-v1",
+    maximumStoredBytes: 3_407_872,
+    plaintextContents:
+      "A bounded organizer proposal checkpoint with its exact claim, model, input commitment, application plan token, and authenticated model exposure dependencies.",
+    lifecycle:
+      "The ordinary semantic worker authenticates and opens the sealed checkpoint only for the exact current claim identity before publication revalidation.",
+    clearConditions: [
+      "The semantic work completes or settles terminally.",
+      "A newer canonical admission replaces the work generation.",
+      "Canonical validation requires a fresh organizer calculation.",
+      "Deletion of the owning Record cascades the semantic work row.",
+    ],
+  },
+  ...metadataEntries({
+    id: "reflection-checkpoint-resume",
+    table: REFLECTION_TABLE,
+    fields: ["organizer_proposal_resumed_at"],
+    owner: "packages/reflection-bridge",
+    readers: ["packages/db/src/queries/reflection-status.ts"],
+    writers: ["packages/reflection-bridge/src/server/postgres-semantic-work-store.ts"],
+    retention: "Retained on the owning semantic work row as the time of its last saved-proposal recovery.",
+    tests: ["packages/runtime/tests/integration/reflection-semantic-worker-liveness.integration.test.ts"],
+    reason: "This timestamp records when the worker resumed an organizer proposal.",
+    includeTable: false,
+  }),
+  ...[GET_RECOVERY_ROUTE, POST_RECOVERY_ROUTE].map(
+    (locator, index): EncryptionCoverageEntry => ({
+      id: `wire.manual-memory-recovery.${index + 1}`,
+      surface: "wire",
+      locator,
+      owner: "packages/server",
+      readers: ["packages/server/src/routes/memory-status.ts"],
+      writers: ["packages/server/src/routes/memory-status.ts"],
+      migrationState: "not_applicable",
+      retention: "Authenticated server-operations request lifetime only.",
+      testEvidence: [
+        "packages/server/tests/unit/memory-status-route.test.ts",
+        SECURITY_TEST,
+      ],
+      classification: "bounded_metadata",
+      metadataAllowlist: [
+        "requestId",
+        "confirmBillableRerun",
+        "run",
+        "observedThrough",
+        "stenographer",
+        "reflection",
+        "memory",
+        "state",
+        "queued",
+        "held",
+        "derivedRepair",
+        "retired",
+        "sourcesQueued",
+        "summariesQueued",
+        "error",
+      ],
+      plaintextReason:
+        "The capability-gated route carries one request UUID, literal billable confirmation, observation time, and closed lane states and counts. It never carries Memory or Journal content, Record payloads, model input or output, provider responses, credentials, or keys.",
+    }),
+  ),
+];
+
+export const MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS = [
+  RUN_TABLE,
+  ...RUN_FIELDS.map((field) => `${RUN_TABLE}.${field}`),
+  JOURNAL_TABLE,
+  ...JOURNAL_FIELDS.map((field) => `${JOURNAL_TABLE}.${field}`),
+  ...REFLECTION_FIELDS.map((field) => `${REFLECTION_TABLE}.${field}`),
+  REFLECTION_CHECKPOINT,
+  `${REFLECTION_TABLE}.organizer_proposal_resumed_at`,
+] as const;

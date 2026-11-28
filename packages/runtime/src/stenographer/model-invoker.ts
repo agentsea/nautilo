@@ -36,6 +36,13 @@ export function classifyRoomSideInvocationFailure(
   return error;
 }
 
+/** Exact Stenographer input still exists but its Human authority is disabled. */
+export class StenographerInputAuthorityUnavailableError extends Error {
+  constructor() {
+    super("Stenographer input authority is unavailable");
+  }
+}
+
 export function createRoomSideModelInvoker(opts: {
   modelId: string;
   userId?: string;
@@ -50,6 +57,8 @@ export function createRoomSideModelInvoker(opts: {
   fundingSession?: ForegroundChatFundingSession;
   /** Trusted admission for one same-model marketplace retry without a provider pin. */
   allowUnpinnedSurplusRetry?: true;
+  /** Final live fence at the direct or marketplace provider-attempt seam. */
+  beforeProviderDispatch?: (signal?: AbortSignal) => Promise<void>;
   assertCurrent?: () => Promise<void>;
 }): (prompt: string, signal?: AbortSignal) => Promise<string> {
   return async (prompt, signal) => {
@@ -83,6 +92,9 @@ export function createRoomSideModelInvoker(opts: {
               ...(opts.allowUnpinnedSurplusRetry === true
                 ? { allowUnpinnedSurplusRetry: true as const }
                 : {}),
+              ...(opts.beforeProviderDispatch === undefined ? {} : {
+                beforeProviderDispatch: opts.beforeProviderDispatch,
+              }),
               modelFallbackMode: opts.fundingSession === undefined ? opts.invocationPolicy?.modelFallbackMode ?? "agent_chain" : "none",
               ...(opts.invocationPolicy === undefined ? {} : {
                 sameModelRetryMode: opts.invocationPolicy.sameModelRetryMode,
@@ -103,7 +115,10 @@ export function createRoomSideModelInvoker(opts: {
 
 export function mapModelFailure(
   error: unknown,
-): "provider" | "provider_outcome_unknown" | "timeout" | "unknown" {
+): "provider" | "provider_outcome_unknown" | "input_authority_unavailable" | "timeout" | "unknown" {
+  if (error instanceof StenographerInputAuthorityUnavailableError) {
+    return "input_authority_unavailable";
+  }
   if (error instanceof SurplusOutcomeUnknownError || error instanceof MemoryProviderOutcomeUnknownError) {
     return "provider_outcome_unknown";
   }

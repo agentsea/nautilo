@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import type { MemoryOperationBinding } from "@nautilo/types";
 import {
   boolean,
@@ -38,6 +39,50 @@ export const REFLECTION_RECORD_COLLECTION_LIMITS = Object.freeze({
   // Mirrors Reflection's existing durable Record traversal-page maximum.
   repairPageMaximum: 256,
 });
+
+/**
+ * Bounded, content-free key for one manual provider-recovery family.
+ * Existing grants take precedence so bound and not-yet-bound siblings remain
+ * one family after a partial claim. Otherwise canonical service bindings
+ * share one paid-operation family and every other row is isolated.
+ * Consumers still recheck the exact binding/recovery identity under row lock,
+ * so a digest collision can only co-page rows and cannot combine grants.
+ */
+export function reflectionManualRecoveryFamilyKeySql(columns: Readonly<{
+  acceptedModelBinding: AnyPgColumn;
+  manualRecoveryId: AnyPgColumn;
+  recordId: AnyPgColumn;
+}>): SQL<string> {
+  return sql<string>`case
+    when ${columns.manualRecoveryId} is not null
+    then 'recovery:' || ${columns.manualRecoveryId}::text
+    when ${reflectionManualRecoveryBindingKeySql(columns.acceptedModelBinding)} is not null
+    then ${reflectionManualRecoveryBindingKeySql(columns.acceptedModelBinding)}
+    else 'record:' || md5(${columns.recordId})
+  end`;
+}
+
+/** Indexed pseudonymous lookup key for exact canonical service bindings. */
+export function reflectionManualRecoveryBindingKeySql(
+  acceptedModelBinding: AnyPgColumn,
+): SQL<string | null> {
+  return sql<string | null>`case
+    when ${acceptedModelBinding}->>'version' = '1'
+      and ${acceptedModelBinding}->>'kind' = 'service'
+      and ${acceptedModelBinding}->>'role' = 'memoryReflection'
+    then 'binding:' || encode(sha256(jsonb_send(${acceptedModelBinding})), 'hex')
+    else null
+  end`;
+}
+
+/** Stable pseudonymous keyset coordinate for derived-lineage repair pages. */
+export function reflectionDerivedRecoveryCursorKeySql(
+  recordId: AnyPgColumn,
+): SQL<string> {
+  return sql<string>`'derived:' || encode(sha256(jsonb_send(
+    jsonb_object(array['record', ${recordId}])
+  )), 'hex')`;
+}
 
 export const REFLECTION_RECORD_SEMANTIC_WORK_STAGES = Object.freeze([
   "authority_projection",
@@ -932,6 +977,19 @@ export const reflectionRecordSemanticWork = pgTable(
     acceptedModelBindingGeneration: integer(
       "accepted_model_binding_generation",
     ),
+    /** Latest operator-authorized fresh computation after an ambiguous wire
+     * outcome. The canonical claim-time admission still derives and verifies
+     * the new server-keyed input commitment before any provider dispatch. */
+    manualRecoveryId: uuid("manual_recovery_id"),
+    manualRecoverySourceGeneration: integer("manual_recovery_source_generation"),
+    manualRecoveryAuthorizedBy: uuid("manual_recovery_authorized_by"),
+    manualRecoveryAuthorizedAt: timestamp("manual_recovery_authorized_at", { withTimezone: true }),
+    manualRecoveryObservedThrough: timestamp("manual_recovery_observed_through", { withTimezone: true }),
+    manualRecoveryServiceModelId: text("manual_recovery_service_model_id"),
+    manualRecoverySpentAt: timestamp("manual_recovery_spent_at", { withTimezone: true }),
+    /** Sealed proposal for this generation, written only by ordinary Reflection. */
+    organizerProposalCheckpoint: bytea("organizer_proposal_checkpoint"),
+    organizerProposalResumedAt: timestamp("organizer_proposal_resumed_at", { withTimezone: true }),
     attemptCount: smallint("attempt_count").notNull().default(0),
     quarantineRound: integer("quarantine_round").notNull().default(0),
     recoveryPolicyVersion: integer("recovery_policy_version").notNull().default(0),
@@ -1030,6 +1088,42 @@ export const reflectionRecordSemanticWork = pgTable(
         ${table.acceptedModelBinding} is not null
         and ${table.acceptedModelBindingGeneration} is not null
         and ${table.acceptedModelBindingGeneration} = ${table.generation}
+      )`,
+    ),
+    check(
+      "reflection_record_semantic_work_manual_recovery_coherent",
+      sql`(
+        ${table.manualRecoveryId} is null
+        and ${table.manualRecoverySourceGeneration} is null
+        and ${table.manualRecoveryAuthorizedBy} is null
+        and ${table.manualRecoveryAuthorizedAt} is null
+        and ${table.manualRecoveryObservedThrough} is null
+        and ${table.manualRecoveryServiceModelId} is null
+        and ${table.manualRecoverySpentAt} is null
+      ) or (
+        ${table.manualRecoveryId} is not null
+        and ${table.manualRecoverySourceGeneration} is not null
+        and ${table.manualRecoverySourceGeneration} > 0
+        and (
+          ${table.manualRecoverySourceGeneration} = ${table.generation} - 1
+          or (
+            ${table.manualRecoverySourceGeneration} = ${table.generation}
+            and ${table.manualRecoverySpentAt} is null
+            and ${table.acceptedModelBinding} is not null
+            and ${table.acceptedModelBindingGeneration} = ${table.generation}
+          )
+        )
+        and ${table.manualRecoveryAuthorizedBy} is not null
+        and ${table.manualRecoveryAuthorizedAt} is not null
+        and ${table.manualRecoveryObservedThrough} is not null
+        and ${table.manualRecoveryObservedThrough} <= ${table.manualRecoveryAuthorizedAt}
+        and ${table.manualRecoveryServiceModelId} is not null
+        and octet_length(${table.manualRecoveryServiceModelId}) > 0
+        and btrim(${table.manualRecoveryServiceModelId}) = ${table.manualRecoveryServiceModelId}
+        and (
+          ${table.manualRecoverySpentAt} is null
+          or ${table.manualRecoverySpentAt} >= ${table.manualRecoveryAuthorizedAt}
+        )
       )`,
     ),
     check(
@@ -1153,6 +1247,28 @@ export const reflectionRecordSemanticWork = pgTable(
       table.attemptCount,
       table.dueSince,
     ),
+    index("idx_reflection_record_semantic_work_manual_recovery_family")
+      .on(
+        sql`(${reflectionManualRecoveryFamilyKeySql(table)})`,
+        table.recordId,
+      )
+      .where(sql`${table.state} in ('complete', 'quarantined', 'checkpointed')`),
+    index("idx_reflection_record_semantic_work_manual_recovery_binding")
+      .on(
+        sql`(${reflectionManualRecoveryBindingKeySql(table.acceptedModelBinding)})`,
+        table.recordId,
+      )
+      .where(sql`${reflectionManualRecoveryBindingKeySql(table.acceptedModelBinding)}
+        is not null`),
+    index("idx_reflection_record_semantic_work_manual_recovery_grant")
+      .on(table.manualRecoveryId, table.recordId)
+      .where(sql`${table.manualRecoveryId} is not null`),
+    index("idx_reflection_record_semantic_work_derived_recovery_cursor")
+      .on(
+        sql`(${reflectionDerivedRecoveryCursorKeySql(table.recordId)})`,
+        table.recordId,
+      )
+      .where(sql`${table.state} = 'quarantined'`),
     productPolicy("reflection_record_semantic_work"),
   ],
 ).enableRLS();
