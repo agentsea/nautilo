@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Update the server's pinned headless Chrome runtime to stable 158.0.8127.88
+  on both Linux architectures, preserving complete browser payloads and licenses.
+
 - Recover background Journal, Reflection, and Memory review work automatically
   when it is safe to retry. In Server Admin → Memory, **Recover all memory** lets
   an operator authorize fresh provider calls for stuck work across all Rooms and
