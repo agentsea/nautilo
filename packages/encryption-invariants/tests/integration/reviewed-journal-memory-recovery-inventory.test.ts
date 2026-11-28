@@ -25,6 +25,8 @@ const addedWriters = [
   "update|public.reflection_record_semantic_work|packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#saveOrganizerProposalCheckpoints:update:public.reflection_record_semantic_work:1",
   "update|public.room_journal_model_recoveries|packages/runtime/src/stenographer/repository.ts#tryClaimCompactionRoom:update:public.room_journal_model_recoveries:1",
   "update|public.memory_review_model_recoveries|packages/runtime/src/memory-review/repository.ts#fail:update:public.memory_review_model_recoveries:1",
+  "update|public.memory_review_model_recoveries|packages/runtime/src/memory-review/repository.ts#holdChangedRecovery:update:public.memory_review_model_recoveries:1",
+  "update|public.memory_review_turns|packages/runtime/src/memory-review/repository.ts#bindModelOperation:update:public.memory_review_turns:2",
   "update|public.memory_review_turns|packages/runtime/src/memory-review/repository.ts#fail:update:public.memory_review_turns:2",
   "update|public.room_journal_state|packages/runtime/src/stenographer/repository.ts#failCompaction:update:public.room_journal_state:2",
   "update|public.room_journal_state|packages/runtime/src/stenographer/repository.ts#failExtraction:update:public.room_journal_state:2",
@@ -58,6 +60,13 @@ const removedWriters: readonly DatabaseWriterObservation[] = [
     operation: "update",
     table: "public.memory_review_turns",
     path: "packages/runtime/src/memory-review/repository.ts",
+    symbol: "requestModelRecovery",
+    locator: "packages/runtime/src/memory-review/repository.ts#requestModelRecovery:update:public.memory_review_turns:1",
+  },
+  {
+    operation: "update",
+    table: "public.memory_review_turns",
+    path: "packages/runtime/src/memory-review/repository.ts",
     symbol: "claimNext",
     locator: "packages/runtime/src/memory-review/repository.ts#claimNext:update:public.memory_review_turns:3",
   },
@@ -73,7 +82,7 @@ const removedWriters: readonly DatabaseWriterObservation[] = [
 describe("reviewed Journal and Memory recovery inventory", () => {
   test("pins the appended recovery migrations and snapshots", () => {
     const inventory = inventoryMigrationTree(resolve(repoRoot, "packages/db/src/migrations"));
-    expect(inventory.migrations.filter(item => item.index >= 392 && item.index <= 402)).toEqual([
+    expect(inventory.migrations.filter(item => item.index >= 392 && item.index <= 403)).toEqual([
       { index: 392, tag: "0392_flaky_spencer_smythe", path: "0392_flaky_spencer_smythe.sql", sha256: "22ffc8f0d9fc59c6c63386f395b240dd874d75c90f6f0adb783ee03e7427de56" },
       { index: 393, tag: "0393_past_shocker", path: "0393_past_shocker.sql", sha256: "4129a4432c0e224827f8034921544dbc9faff127ebfbf676646c2f80e2b60007" },
       { index: 394, tag: "0394_absurd_young_avengers", path: "0394_absurd_young_avengers.sql", sha256: "978a13f89a637a05ea1fbb05f83085c11038b5dbc7a6c88d327454bcce13574a" },
@@ -85,8 +94,9 @@ describe("reviewed Journal and Memory recovery inventory", () => {
       { index: 400, tag: "0400_curious_professor_monster", path: "0400_curious_professor_monster.sql", sha256: "37b81025441248afda5aee03369737d8774774b6141334a3260683b4c0db1468" },
       { index: 401, tag: "0401_fearless_giant_girl", path: "0401_fearless_giant_girl.sql", sha256: "c7017122e7825da9754778c73985182b1d2deccf69495a96bf18421fa5a0ed81" },
       { index: 402, tag: "0402_romantic_frightful_four", path: "0402_romantic_frightful_four.sql", sha256: "b3e4a9df3482257f8e6453a5de512411bbbb1538e667400a56c2924f84908323" },
+      { index: 403, tag: "0403_brainy_puppet_master", path: "0403_brainy_puppet_master.sql", sha256: "85bd41418f7a63dfd9a6868e7bd281057940ccbfa076da8e177ce2c7a86368da" },
     ]);
-    expect(inventory.snapshots.filter(item => item.index >= 392 && item.index <= 402)).toEqual([
+    expect(inventory.snapshots.filter(item => item.index >= 392 && item.index <= 403)).toEqual([
       { index: 392, path: "meta/0392_snapshot.json", sha256: "bd63f34c95e159046995803accace3ecf48562cac8b249df0d1785fb17f71b50" },
       { index: 393, path: "meta/0393_snapshot.json", sha256: "b4380617cd8bf32d402094a405c73e93400769fc7d12e078db0a6c2b1e12ac50" },
       { index: 394, path: "meta/0394_snapshot.json", sha256: "2ea9817face611550bdde19128dcc6535f8c3e62c97c67ab0d29331f3b3f7383" },
@@ -98,6 +108,7 @@ describe("reviewed Journal and Memory recovery inventory", () => {
       { index: 400, path: "meta/0400_snapshot.json", sha256: "d29289e553fa444348d2c9f3dc8d085f2512b1e6784bd5feb7d00f592156daf7" },
       { index: 401, path: "meta/0401_snapshot.json", sha256: "685a0709afac2e0d69a82f8e3280615f5640e9f0bc8a08b3cacde22b8fa68649" },
       { index: 402, path: "meta/0402_snapshot.json", sha256: "3cbaaaf0f2ab8be9897c6c3539e6b65c3aa642187f673fd3c01d0985b77c6db1" },
+      { index: 403, path: "meta/0403_snapshot.json", sha256: "35be4c20f5756f47c52f8e26fe3ba8b756738f8651b3fe612adf6c68c7936303" },
     ]);
   });
 

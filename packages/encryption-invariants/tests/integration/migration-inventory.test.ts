@@ -331,7 +331,7 @@ describe("migration inventory", () => {
       schema: "public",
       name: "session_messages",
     });
-    expect(inventory.currentColumns).toHaveLength(3353);
+    expect(inventory.currentColumns).toHaveLength(3355);
     expect(inventory.currentConstraints).toHaveLength(943);
     expect(inventory.currentConstraints).toContainEqual({
       locator: "public.actors#foreign_key:actors_owner_id_users_id_fk",
@@ -546,6 +546,7 @@ describe("migration inventory", () => {
       { path: "0400_curious_professor_monster.sql", sha256: "37b81025441248afda5aee03369737d8774774b6141334a3260683b4c0db1468" },
       { path: "0401_fearless_giant_girl.sql", sha256: "c7017122e7825da9754778c73985182b1d2deccf69495a96bf18421fa5a0ed81" },
       { path: "0402_romantic_frightful_four.sql", sha256: "b3e4a9df3482257f8e6453a5de512411bbbb1538e667400a56c2924f84908323" },
+      { path: "0403_brainy_puppet_master.sql", sha256: "85bd41418f7a63dfd9a6868e7bd281057940ccbfa076da8e177ce2c7a86368da" },
     ]);
 
     const comparison = compareSchemaAndMigrationInventory(

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, jsonb, pgPolicy, pgRole, pgTable, uniqueIndex, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { check, index, integer, jsonb, pgPolicy, pgRole, pgTable, uniqueIndex, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 import { sessions } from "./sessions";
 import { agents } from "./agents";
 import { rooms } from "./rooms";
@@ -58,10 +58,18 @@ export const memoryReviewModelRecoveries = pgTable("memory_review_model_recoveri
   authorizedAt: timestamp("authorized_at", { withTimezone: true }).notNull(),
   blockedAttemptId: uuid("blocked_attempt_id").notNull(),
   turnIds: uuid("turn_ids").array().notNull(),
+  /** SHA-256 over the exact transcript row identities/revisions authorized by the Human. */
+  sourceRevisionFingerprint: text("source_revision_fingerprint"),
+  /** A legacy, missing, or changed source snapshot is a durable hold until a fresh click. */
+  sourceChangedAt: timestamp("source_changed_at", { withTimezone: true }),
   spentAt: timestamp("spent_at", { withTimezone: true }),
   recoveryAttemptId: uuid("recovery_attempt_id"),
 }, (table) => [
   index("memory_review_model_recovery_head_idx").on(table.headTurnId),
+  check("memory_review_model_recovery_source_fingerprint", sql`
+    ${table.sourceRevisionFingerprint} is null
+    or ${table.sourceRevisionFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
   pgPolicy("memory_review_model_recoveries_product", {
     for: "all", to: pgRole("nautilo").existing(), using: sql`true`, withCheck: sql`true`,
   }),

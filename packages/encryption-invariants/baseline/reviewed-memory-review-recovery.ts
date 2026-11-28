@@ -39,6 +39,8 @@ const RECOVERY_FIELDS = [
   "spent_at",
   "turn_ids",
   "work_id",
+  "source_revision_fingerprint",
+  "source_changed_at",
 ] as const;
 const RECOVERY_TESTS = [
   "packages/runtime/tests/unit/memory-review-repository.test.ts",
@@ -54,8 +56,8 @@ export const REVIEWED_MEMORY_REVIEW_RECOVERY_COVERAGE:
       surface: "db",
       locator,
       owner: "packages/runtime",
-      readers: ["packages/runtime/src/memory-review/repository.ts"],
-      writers: ["packages/runtime/src/memory-review/repository.ts"],
+      readers: ["packages/runtime/src/memory-review/repository.ts", "packages/server/src/lib/request-manual-review-recovery.ts"],
+      writers: ["packages/runtime/src/memory-review/repository.ts", "packages/server/src/lib/request-manual-review-recovery.ts"],
       migrationState: "not_applicable",
       retention:
         "Retained with the owning head turn after consumption so work cannot reuse the authorization. Deleting the head turn removes the row.",
@@ -65,7 +67,7 @@ export const REVIEWED_MEMORY_REVIEW_RECOVERY_COVERAGE:
         ? [...RECOVERY_FIELDS]
         : [locator.slice(RECOVERY_TABLE.length + 1)],
       plaintextReason:
-        "The server-only row contains UUID work, turn, attempt, and operator coordinates plus authorization and consumption timestamps. It contains no transcript, model input or output, provider response, credential, or cryptographic material.",
+        "The server-only row holds work, turn, attempt, and operator identifiers, authorization timestamps, and a fixed-size digest of source identifiers and revisions. The digest binds the review to the approved transcript without storing its content.",
     })),
   {
     id: "wire.memory-review-model-recovery",

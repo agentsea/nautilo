@@ -3,15 +3,17 @@ import { AIMessage } from "@langchain/core/messages";
 import { findResumedMemoryReviewAdmission } from "../../src/memory-review/admission";
 import { randomUUID } from "node:crypto";
 import {
-  actors, agents, rooms, roomMembers, namespaces, sessions, sessionMessages, users,
+  actors, agents, rooms, roomMembers, namespaces, profiles, sessions, sessionMessages, users,
+  compareAndSwapEncryptionTransitionPolicy, cryptoObjects, getEncryptionTransitionPolicy,
   groups, groupMembers, memoryReviewTurns, memoryReviewReceipts, memoryReviewModelRecoveries, llmUsageEvents,
   admitMemoryReviewSourceInTx, markMemoryReviewTurnInTx, retryFailedMemoryReviews,
-  getSharedDirectDb, eq, sql,
+  getSharedDirectDb, eq, inArray, sql,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { appendTranscriptMessages, withSerializableAgentTrustContext, type PreparedMemoryReview } from "@nautilo/agent";
-import { initPolicyResolver, type NamespaceMemoryEnvelope } from "@nautilo/trust";
+import { deleteMessageHardInTx, editCanonicalTranscriptMessageInTx, initPolicyResolver, type NamespaceMemoryEnvelope } from "@nautilo/trust";
 import { PostgresMemoryReviewRepository } from "../../src/memory-review/repository";
+import { MemoryReviewWorker, type MemoryReviewClaim } from "../../src/memory-review/worker";
 import { recoverMemoryReviewTurnsAtStartup } from "../../src/memory-review/startup-recovery";
 import { createIntegrationStubPolicyResolver } from "./integration-stub-policy";
 import { createTestUser, createTestRoom, getDirectDb, closeDirectDb } from "./helpers";
@@ -30,7 +32,8 @@ const threadId = `m319-integration:${randomUUID()}`;
 let envelope: NamespaceMemoryEnvelope;
 // Exercise recovery through the runtime product role even when a suite uses
 // a separate direct connection for fixtures.
-const repo = new PostgresMemoryReviewRepository({ threshold: () => 2, leaseMs: 120_000, retryMs: 15_000, retentionMs: 86_400_000, retentionBatchSize: 10, assertAvailable: async () => {} }, getSharedDirectDb());
+const policy = { threshold: () => 2, leaseMs: 120_000, retryMs: 15_000, retentionMs: 86_400_000, retentionBatchSize: 10, assertAvailable: async () => {} };
+const repo = new PostgresMemoryReviewRepository(policy, getSharedDirectDb());
 
 beforeAll(async () => {
   bootstrapTestDbInstance();
@@ -73,12 +76,13 @@ afterAll(async () => {
 });
 
 async function admit(turnId: string) {
-  await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
     const [message] = await tx.insert(sessionMessages).values({ sessionId, role: "user", content: "Synthetic Memory review evidence", humanTurnId: turnId }).returning();
     const admission = { sessionId, threadId, ownerId: userId, actorId, agentId, roomId, accessScope: "namespace", checkpointThreadId: threadId, turnId, existingSourceMessageIds: [message!.id] };
     await admitMemoryReviewSourceInTx(tx, admission);
     await admitMemoryReviewSourceInTx(tx, admission);
     await markMemoryReviewTurnInTx(tx, { threadId, agentId, turnId, state: "completed" });
+    return message!.id;
   });
 }
 
@@ -265,8 +269,9 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     expect(renewed.sourceIds).toContain(Number(appended.insertedRows[0]!.id));
     expect(renewed.attemptId).not.toBe(reserved.attemptId);
     const refreshed = { ...accepted, inputCommitment: `hmac-sha256:${"b".repeat(43)}` };
-    expect(await repo.bindModelOperation(renewed, async (legacyModelId) => {
-      expect(legacyModelId).toBe(modelId);
+    expect(await repo.bindModelOperation(renewed, async (legacyModelId, priorBinding) => {
+      expect(legacyModelId).toBeUndefined();
+      expect(priorBinding).toEqual(accepted);
       return refreshed;
     })).toEqual(refreshed);
     expect(await repo.modelReplaySafety(renewed)).toBe("allow");
@@ -277,6 +282,151 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     expect(await repo.claimNext({ now: new Date(renewed.leaseUntil.getTime() + 1) })).toBeNull();
     const proposal: PreparedMemoryReview = { envelope, speakerUserId: userId, operations: [], snapshots: [] };
     expect(await repo.publish({ claim: renewed, proposal, modelId, now: new Date(), durationMs: 0 })).toBe("published");
+  });
+
+  test.each([
+    ["unchanged", "none"],
+    ["before claim", "edit"], ["before claim", "delete"],
+    ["before claim", "edit under legacy approval"],
+    ["at dispatch", "edit"], ["at dispatch", "delete"],
+    ["at dispatch", "edit covered predecessor"],
+    ["at dispatch", "edit with incomplete exposure"], ["at dispatch", "protected edit"],
+  ] as const)("old Memory approval at the provider boundary: %s / %s", async (timing, change) => {
+    // load() also includes the last covered turn in the prompt.
+    const priorTurn = randomUUID();
+    const priorMessage = await admit(priorTurn);
+    await db.update(memoryReviewTurns).set({ state: "covered", receiptId: randomUUID() })
+      .where(eq(memoryReviewTurns.turnId, priorTurn));
+    const firstTurn = randomUUID();
+    const secondTurn = randomUUID();
+    const protectedObjectId = randomUUID();
+    const messageId = await admit(firstTurn);
+    await admit(secondTurn);
+    const model = "fixture:memory-source-consent";
+    const previous = await repo.claimNext({ now: new Date() });
+    if (!previous) throw new Error("expected a failed review fixture");
+    try {
+      if (change === "edit with incomplete exposure") {
+        // Historical reviews can omit exposure metadata for profile content.
+        await db.insert(profiles).values({ agentId, userId, soulFile: "Synthetic source consent fixture" });
+      }
+      await repo.bindServiceModel(previous, () => model);
+      await db.insert(llmUsageEvents).values({
+        roomId, callType: "memory_review", model, provider: "fixture", fundingKind: "service",
+        providerRoute: "surplus", endpoint: "/v1/responses", providerRequestId: randomUUID(),
+        attemptOutcome: "succeeded", costState: "actual", actualCostUsd: "0.01",
+        metadata: { workId: previous.workId, attemptId: previous.attemptId },
+      });
+      await repo.fail({ claim: previous, phase: "model", reason: "provider_outcome_unknown", retryable: false, now: new Date() });
+      const request = () => repo.requestModelRecovery({
+        workId: previous.workId, headTurnId: previous.turnIds[0]!, authorizedBy: userId, now: new Date(),
+      });
+      expect(await request()).toBe("queued");
+
+      if (change === "edit under legacy approval") {
+        // An unspent grant restored from before the source-fingerprint migration.
+        await db.update(memoryReviewModelRecoveries).set({ sourceRevisionFingerprint: null })
+          .where(eq(memoryReviewModelRecoveries.workId, previous.workId));
+      }
+      const verifyWorker = async (activeDb: NonNullable<ConstructorParameters<typeof PostgresMemoryReviewRepository>[1]>) => {
+        let mutationCount = 0;
+        const mutate = async () => {
+          if (change === "delete") {
+            await activeDb.transaction(tx => deleteMessageHardInTx(tx, messageId));
+          } else if (change === "protected edit") {
+            await activeDb.transaction(async tx => {
+              const prior = await getEncryptionTransitionPolicy(tx);
+              const shadow = await compareAndSwapEncryptionTransitionPolicy(tx, {
+                expectedRevision: prior.revision, targetMode: "shadow_encryption", targetShadowBehavior: "fallback",
+              });
+              await tx.insert(cryptoObjects).values({ objectId: protectedObjectId, payloadHash: Buffer.alloc(32), payloadBytes: Buffer.from([1]) });
+              const result = await editCanonicalTranscriptMessageInTx(tx, {
+                messageId, expectedRevision: 0, content: null,
+                protectedTargets: [{ messageId, sessionId, cryptoObjectId: protectedObjectId }],
+                publicationPolicy: { representation: "protected_only", expectedRevision: shadow.revision },
+              });
+              if (result === null) throw new Error("expected a committed protected edit");
+              await compareAndSwapEncryptionTransitionPolicy(tx, {
+                expectedRevision: shadow.revision, targetMode: prior.mode, targetShadowBehavior: prior.shadowBehavior,
+              });
+            });
+          } else {
+            const result = await activeDb.transaction(tx => editCanonicalTranscriptMessageInTx(tx, {
+              messageId: change === "edit covered predecessor" ? priorMessage : messageId,
+              expectedRevision: 0, content: "Edited after operator approval", clearCryptoObjectId: true,
+            }));
+            if (result === null) throw new Error("expected a committed canonical edit");
+          }
+          mutationCount++;
+        };
+        if (timing === "before claim") await mutate();
+        const scanned = Promise.withResolvers<void>();
+        let incompleteExposure = false;
+        class RecoveryRepository extends PostgresMemoryReviewRepository {
+          override async claimNext(input: Parameters<PostgresMemoryReviewRepository["claimNext"]>[0]) {
+            try { return await super.claimNext(input); } finally { scanned.resolve(); }
+          }
+          override async beginModelRecoveryDispatch(claim: MemoryReviewClaim, signal?: AbortSignal) {
+            // This is after the worker's last ordinary source/lease checks.
+            if (timing === "at dispatch") await mutate();
+            await super.beginModelRecoveryDispatch(claim, signal);
+          }
+          override async load(claim: MemoryReviewClaim) {
+            const input = await super.load(claim);
+            incompleteExposure = input.modelExposureDependencies === undefined;
+            return input;
+          }
+        }
+        let providerCalls = 0;
+        const repository = new RecoveryRepository(policy, activeDb);
+        const worker = new MemoryReviewWorker({
+          repository,
+          checkAvailable: async () => true, resolveModelId: () => model,
+          prepare: async (messages, options) => {
+            await options.invokeModel!({ modelId: model, messages, tools: [] });
+            return { status: "prepared", turns: 2, modelId: model,
+              proposal: { envelope, speakerUserId: userId, operations: [], snapshots: [] } };
+          },
+          invokeModel: async (_invocation, beforeProviderDispatch) => {
+            if (!beforeProviderDispatch) throw new Error("missing provider dispatch guard");
+            await beforeProviderDispatch();
+            providerCalls++;
+            if (change !== "none") throw new Error("stale input reached the counting provider");
+            return new AIMessage("Nothing to save.");
+          },
+        }, { scanIntervalMs: 60_000, shutdownWaitMs: 10_000 });
+        worker.start();
+        try { await scanned.promise; } finally { await worker.stop(); }
+        const unchanged = change === "none";
+        expect(mutationCount).toBe(unchanged ? 0 : 1);
+        expect(providerCalls).toBe(unchanged ? 1 : 0);
+        if (change === "edit with incomplete exposure") expect(incompleteExposure).toBe(true);
+        const [grant] = await activeDb.select().from(memoryReviewModelRecoveries)
+          .where(eq(memoryReviewModelRecoveries.workId, previous.workId));
+        expect(grant).toBeDefined();
+        expect(grant!.spentAt !== null).toBe(unchanged);
+        expect(grant!.sourceChangedAt !== null).toBe(!unchanged);
+        expect(await repository.claimNext({ now: new Date() })).toBeNull();
+      };
+      if (change === "protected edit") {
+        // Exercise the protected writer and recovery spend on PostgreSQL. Roll
+        // back their enclosing fixture so ciphertext and policy changes expire together.
+        const rollback = new Error("protected fixture verified");
+        try {
+          await db.transaction(async tx => {
+            await verifyWorker(tx);
+            throw rollback;
+          });
+        } catch (error) {
+          if (error !== rollback) throw error;
+        }
+      } else {
+        await verifyWorker(getSharedDirectDb());
+      }
+    } finally {
+      await db.delete(memoryReviewTurns).where(inArray(memoryReviewTurns.turnId, [priorTurn, firstTurn, secondTurn]));
+      if (change === "edit with incomplete exposure") await db.delete(profiles).where(eq(profiles.agentId, agentId));
+    }
   });
 
   test("two unusable results remain exactly retryable for each service provider route", async () => {

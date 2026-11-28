@@ -4,6 +4,7 @@ import { MemoryReviewError } from "@nautilo/agent";
 import { PersonalMemoryEvidenceChangedError } from "@nautilo/reflection-bridge/server";
 import { MEMORY_REVIEW_AUTOMATIC_RETRY_CODES, MEMORY_REVIEW_MANUAL_RETRY_CODES } from "@nautilo/types";
 import { createPersonalMemoryReviewAdmitter } from "../../src/lib/personal-memory-review-funding";
+import { MemoryReviewRecoveryEvidenceChangedError } from "../../src/lib/personal-memory-operation";
 import type { MemoryReviewClaim, MemoryReviewRepository } from "@nautilo/runtime";
 
 const claim: MemoryReviewClaim = {
@@ -72,6 +73,19 @@ describe("personal Memory review funding adapter", () => {
 
     expect(await failure(admit(claim, { messages: [], memoryAccessEnvelope: envelope }, async () => {})))
       .toMatchObject({ name: "MemoryReviewError", code: "memory_unavailable" });
+  });
+
+  test("reports a proved manual service rebind mismatch as changed source evidence", async () => {
+    const admit = createPersonalMemoryReviewAdmitter({
+      repository: repository(), evidence: {} as never, budget: { maxVisitedRecords: 1, maxTraversalWork: 1 },
+      commitmentKey: new Uint8Array(32).fill(3), resolveServiceModel: () => "service-model",
+      resolveExposureDependencies: async () => undefined,
+      openOperation: async () => { throw new MemoryReviewRecoveryEvidenceChangedError(); },
+    });
+
+    expect(await failure(admit({ ...claim, modelRecovery: "authorized" },
+      { messages: [], memoryAccessEnvelope: envelope }, async () => {})))
+      .toMatchObject({ name: "MemoryReviewError", code: "source_changed" });
   });
 
   test("reports a current-evidence funding fence before model dispatch as unavailable Memory", async () => {

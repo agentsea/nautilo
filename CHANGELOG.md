@@ -18,6 +18,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   the hold. A fresh click can authorize the current inputs when they qualify for
   server funding. Editing or deleting a source message also prevents an approved
   Journal extraction from sending the old transcript to the provider.
+  Memory review checks the revisions of all approved source messages immediately
+  before dispatch and holds the review if any message was edited or deleted.
 
 - Let Room Journal rebuilds continue after a rebuilt observation replaces
   an earlier one, so Reflection can retire work for the old Journal.

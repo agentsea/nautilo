@@ -77,6 +77,64 @@ const historicalOrganizerRecord = (): DurableRecordEnvelope => ({
 });
 
 describe("existing Memory operation admission", () => {
+  test("manual service recovery keeps an exact typed binding without reopening funding", async () => {
+    const f = fixture();
+    f.shared();
+    const previous = await openMemoryOperation(f.options);
+    if (previous.binding.kind !== "service") throw new Error("expected service binding");
+    const resumed = await openMemoryOperation({
+      ...f.options,
+      bind: resolve => resolve(undefined, previous.binding as Extract<MemoryOperationBinding, { kind: "service" }>),
+    });
+    expect(resumed.binding).toEqual(previous.binding);
+    expect(resumed.humanUserId).toBeNull();
+    expect(f.counters()).toEqual({ selections: 0, opens: 0 });
+  });
+
+  test("manual service recovery rebinds changed inputs only with current service evidence", async () => {
+    const f = fixture();
+    f.shared();
+    const previous = await openMemoryOperation(f.options);
+    if (previous.binding.kind !== "service") throw new Error("expected service binding");
+    f.change();
+    const rebound = await openMemoryOperation({
+      ...f.options,
+      bind: resolve => resolve(undefined, previous.binding as Extract<MemoryOperationBinding, { kind: "service" }>),
+    });
+    expect(rebound.binding).toMatchObject({ kind: "service", modelId: previous.modelId });
+    expect(rebound.binding.inputCommitment).not.toBe(previous.binding.inputCommitment);
+    expect(rebound.humanUserId).toBeNull();
+    expect(f.counters()).toEqual({ selections: 0, opens: 0 });
+    await rebound.assertCurrent();
+    f.private();
+    await expectEvidenceChange(rebound.assertCurrent());
+  });
+
+  test("manual service recovery rejects changed Human or incomplete current evidence", async () => {
+    const human = fixture();
+    human.shared();
+    const previous = await openMemoryOperation(human.options);
+    if (previous.binding.kind !== "service") throw new Error("expected service binding");
+    human.change();
+    human.private();
+    await expectEvidenceChange(openMemoryOperation({
+      ...human.options,
+      bind: resolve => resolve(undefined, previous.binding as Extract<MemoryOperationBinding, { kind: "service" }>),
+    }));
+    expect(human.counters()).toEqual({ selections: 0, opens: 0 });
+
+    const incomplete = fixture();
+    incomplete.shared();
+    const accepted = await openMemoryOperation(incomplete.options);
+    if (accepted.binding.kind !== "service") throw new Error("expected service binding");
+    await expectEvidenceChange(openMemoryOperation({
+      ...incomplete.options,
+      dependencies: async () => undefined,
+      bind: resolve => resolve(undefined, accepted.binding as Extract<MemoryOperationBinding, { kind: "service" }>),
+    }));
+    expect(incomplete.counters()).toEqual({ selections: 0, opens: 0 });
+  });
+
   test("changed inputs require a current service payer even when the prior service model is pinned", async () => {
     const f = fixture();
     const fresh = { ...f.options, requireCurrentServicePayer: true,

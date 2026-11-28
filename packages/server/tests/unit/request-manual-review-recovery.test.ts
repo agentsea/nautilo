@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   encryptionTransitionPolicy, memoryReviewModelRecoveries, memoryReviewReceipts, memoryReviewTurns,
-  users,
+  sessionMessages, users,
 } from "@nautilo/db";
 import {
   ManualMemoryReviewRecoveryPausedError,
@@ -9,7 +9,7 @@ import {
   manualReviewRecoveryBinding,
   requestManualReviewRecovery,
 } from "../../src/lib/request-manual-review-recovery";
-import { memoryReviewOrdinaryPolicyAvailable } from "@nautilo/runtime";
+import { memoryReviewOrdinaryPolicyAvailable, memoryReviewSourceRevisionFingerprint } from "@nautilo/runtime";
 
 const NOW = new Date("2026-11-27T12:00:00.000Z");
 const OLD = new Date("2026-11-27T11:00:00.000Z");
@@ -54,11 +54,15 @@ function fakeDb(input: {
   const calls: string[] = [];
   const tx = {
     execute: async () => { calls.push("policy-lock"); return []; },
-    select: () => ({
+    select: (selection?: Record<string, unknown>) => ({
       from: (table: unknown) => {
         const rows = table === encryptionTransitionPolicy
           ? [input.policy ?? { mode: "plaintext_only", shadowBehavior: "fallback", revision: 1 }]
+          : table === memoryReviewTurns && selection?.["sourceIds"] ? []
           : table === memoryReviewTurns ? input.turns
+          : table === sessionMessages ? input.turns.flatMap(value => value.sourceIds.map(id => ({
+              id, sessionId: value.sessionId, editRevision: 0, cryptoObjectId: null, createdAt: OLD, editedAt: null,
+            })))
           : table === memoryReviewReceipts ? (input.receipt ? [input.receipt] : [])
           : table === memoryReviewModelRecoveries ? (input.recovery ? [input.recovery] : [])
           : table === users ? [{ id: "88888888-8888-4888-8888-888888888888" }]
@@ -68,7 +72,7 @@ function fakeDb(input: {
         builder["where"] = () => builder;
         builder["orderBy"] = () => builder;
         builder["for"] = () => builder;
-        builder["limit"] = async () => rows;
+        builder["limit"] = () => builder;
         builder["then"] = (resolve: (value: unknown) => void) => resolve(rows);
         return builder;
       },
@@ -226,6 +230,9 @@ describe("manual Memory-review recovery", () => {
       workId: current.generationId, headTurnId: current.id,
       authorizedBy: current.ownerId, authorizedAt: OLD,
       blockedAttemptId: current.attemptId!, turnIds: [current.id],
+      sourceRevisionFingerprint: memoryReviewSourceRevisionFingerprint([
+        { id: 1, sessionId: current.sessionId, editRevision: 0, cryptoObjectId: null },
+      ]), sourceChangedAt: null,
       spentAt: null, recoveryAttemptId: null,
     } satisfies typeof memoryReviewModelRecoveries.$inferSelect;
     const duplicate = fakeDb({ turns: [current], recovery: pending });

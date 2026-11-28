@@ -2,7 +2,7 @@ import {
   acquireEncryptionConsumptionFence, and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, memoryReviewModelRecoveries,
   getServerContextConfig, memoryReviewReceipts, memoryReviewTurns, users, type DirectDatabase,
 } from "@nautilo/db";
-import { memoryReviewOrdinaryPolicyAvailable } from "@nautilo/runtime";
+import { memoryReviewOrdinaryPolicyAvailable, readMemoryReviewSourceRevisionSnapshot } from "@nautilo/runtime";
 import { notExists, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { parseMemoryOperationBinding, type MemoryOperationBinding } from "@nautilo/types";
@@ -239,6 +239,13 @@ export async function requestManualReviewRecovery(input: Readonly<{
         held += 1;
         continue;
       }
+      const sourceSnapshot = await readMemoryReviewSourceRevisionSnapshot(tx, {
+        head, turns: prefix, observedThrough, rejectAtObservedThrough: true,
+      });
+      if (sourceSnapshot === null) {
+        held += 1;
+        continue;
+      }
 
       const [previous] = await tx.select().from(memoryReviewModelRecoveries)
         .where(eq(memoryReviewModelRecoveries.workId, head.generationId)).for("update");
@@ -251,6 +258,8 @@ export async function requestManualReviewRecovery(input: Readonly<{
       const samePendingIntent = previous?.blockedAttemptId === blockedAttemptId;
       const bindingAlreadyCurrent = alreadyBoundToServiceModel(head.acceptedModelBinding, modelId);
       const authorizationCoversCurrentInput = previous !== undefined
+        && previous.sourceChangedAt === null
+        && previous.sourceRevisionFingerprint === sourceSnapshot.fingerprint
         && prefix.every(turn => turn.updatedAt <= previous.authorizedAt);
       if (samePendingIntent && bindingAlreadyCurrent && authorizationCoversCurrentInput) continue;
       if (!samePendingIntent || !bindingAlreadyCurrent || !authorizationCoversCurrentInput) {
@@ -261,6 +270,8 @@ export async function requestManualReviewRecovery(input: Readonly<{
             authorizedAt: observedThrough,
             blockedAttemptId,
             turnIds,
+            sourceRevisionFingerprint: sourceSnapshot.fingerprint,
+            sourceChangedAt: null,
             spentAt: null,
             recoveryAttemptId: null,
           }).where(samePendingIntent
@@ -277,6 +288,7 @@ export async function requestManualReviewRecovery(input: Readonly<{
             authorizedAt: observedThrough,
             blockedAttemptId,
             turnIds,
+            sourceRevisionFingerprint: sourceSnapshot.fingerprint,
           });
         }
         await tx.update(memoryReviewTurns).set({

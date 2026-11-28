@@ -19,6 +19,7 @@ import type {
 } from "@nautilo/runtime";
 import {
   openMemoryOperation,
+  MemoryReviewRecoveryEvidenceChangedError,
   type AdmittedMemoryOperation,
   type OpenMemoryOperationInput,
 } from "./personal-memory-operation";
@@ -30,6 +31,9 @@ async function translatePersonalEvidenceLoss<T>(operation: () => Promise<T>): Pr
   try {
     return await operation();
   } catch (error) {
+    if (error instanceof MemoryReviewRecoveryEvidenceChangedError) {
+      throw new MemoryReviewError("source_changed");
+    }
     if (error instanceof PersonalMemoryEvidenceChangedError) {
       throw new MemoryReviewError("memory_unavailable");
     }

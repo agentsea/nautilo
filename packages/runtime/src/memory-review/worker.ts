@@ -82,7 +82,10 @@ export interface MemoryReviewRepository {
   beginModelRecoveryDispatch?(claim: MemoryReviewClaim, signal?: AbortSignal): Promise<void>;
   /** Freezes the first service model accepted for every coalesced turn. */
   getAcceptedModelOperation?(claim: MemoryReviewClaim): Promise<MemoryOperationBinding | null>;
-  bindModelOperation?(claim: MemoryReviewClaim, resolve: (legacyServiceModelId?: string) => Promise<MemoryOperationBinding>): Promise<MemoryOperationBinding>;
+  bindModelOperation?(claim: MemoryReviewClaim, resolve: (
+    legacyServiceModelId?: string,
+    previousServiceBinding?: Extract<MemoryOperationBinding, { kind: "service" }>,
+  ) => Promise<MemoryOperationBinding>): Promise<MemoryOperationBinding>;
   bindServiceModel?(claim: MemoryReviewClaim, resolveModelId: () => string): Promise<string>;
   /** Unknown outcome must remain non-executable until its durable receipt resolves. */
   reconcile(claim: MemoryReviewClaim): Promise<MemoryReviewPublicationState>;

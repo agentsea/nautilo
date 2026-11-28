@@ -783,8 +783,12 @@ export { MemoryReviewWorker, type MemoryReviewClaim, type MemoryReviewRepository
   type MemoryReviewPublicationState } from "./memory-review/worker";
 export {
   memoryReviewOrdinaryPolicyAvailable,
+  memoryReviewSourceRevisionFingerprint,
+  readMemoryReviewSourceRevisionSnapshot,
   PostgresMemoryReviewRepository,
   selectMemoryReviewPrefix,
+  type MemoryReviewSourceTurn,
+  type MemoryReviewSourceRevision,
 } from "./memory-review/repository";
 export { memoryReviewAdmission, finishMemoryReviewTurn } from "./memory-review/admission";
 export { recoverMemoryReviewTurnsAtStartup, readOrdinaryMemoryReviewCheckpoint } from "./memory-review/startup-recovery";

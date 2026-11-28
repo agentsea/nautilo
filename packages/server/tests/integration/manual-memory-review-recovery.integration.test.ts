@@ -4,7 +4,7 @@ import {
   agents, compareAndSwapEncryptionTransitionPolicy, createDirectDb, eq,
   getEncryptionTransitionPolicy, inArray, llmUsageEvents,
   memoryReviewModelRecoveries, memoryReviewReceipts, memoryReviewTurns,
-  namespaces, rooms, sessions, users,
+  namespaces, rooms, sessionMessages, sessions, users,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { MaintenanceController } from "@nautilo/runtime";
@@ -96,6 +96,8 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
     { scope: "unbound", binding: null, code: "provider_outcome_unknown", phase: "model", at: failedAt },
     { scope: "fragmented", binding: binding("F"), code: "invalid_proposal", phase: "model", at: failedAt },
     { scope: "newer", binding: binding("N"), code: "invalid_proposal", phase: "model", at: newerFailureAt },
+    { scope: "edited-after-click", binding: binding("E"), code: "invalid_proposal", phase: "model", at: failedAt },
+    { scope: "deleted-after-click", binding: binding("X"), code: "invalid_proposal", phase: "model", at: failedAt },
   ].map((value, index) => ({
     ...value,
     id: randomUUID(),
@@ -117,7 +119,20 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
   });
 
   try {
-    await db.insert(memoryReviewTurns).values([...fixtures, ...interleaved].map(value => ({
+    const turns = [...fixtures, ...interleaved];
+    for (const value of turns) {
+      const [message] = await db.insert(sessionMessages).values({
+        sessionId: session.id, role: "user", content: "Recovery source", createdAt: failedAt,
+      }).returning({ id: sessionMessages.id });
+      value.firstMessageId = message!.id;
+    }
+    // Simulate the interval between the click and processing its durable page.
+    const edited = fixtures.find(value => value.scope === "edited-after-click")!;
+    const deleted = fixtures.find(value => value.scope === "deleted-after-click")!;
+    await db.update(sessionMessages).set({ content: "Edited", editRevision: 1, editedAt: now })
+      .where(eq(sessionMessages.id, edited.firstMessageId));
+    await db.delete(sessionMessages).where(eq(sessionMessages.id, deleted.firstMessageId));
+    await db.insert(memoryReviewTurns).values(turns.map(value => ({
       id: value.id,
       generationId: value.generationId,
       sessionId: session.id,
@@ -198,8 +213,8 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       after = result.nextCursor ?? null;
     } while (after);
     expect(pages).toBeGreaterThan(1);
-    expect(counts).toEqual({ queued: 2, held: 5 });
-    expect(await request(observedThrough)).toEqual({ queued: 0, held: 5 });
+    expect(counts).toEqual({ queued: 2, held: 7 });
+    expect(await request(observedThrough)).toEqual({ queued: 0, held: 7 });
     const maintenance = new MaintenanceController({ db });
     const maintenanceOperationId = randomUUID();
     await maintenance.enterDraining({ operationId: maintenanceOperationId });
@@ -229,8 +244,8 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       targetMode: "shadow_encryption",
       targetShadowBehavior: "fallback",
     });
-    expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 4 });
-    expect(await request(newerFailureAt)).toEqual({ queued: 0, held: 4 });
+    expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 6 });
+    expect(await request(newerFailureAt)).toEqual({ queued: 0, held: 6 });
 
     const recoveries = await db.select().from(memoryReviewModelRecoveries)
       .where(inArray(memoryReviewModelRecoveries.workId, fixtures.map(value => value.generationId)));
@@ -240,6 +255,7 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       .map(value => value.generationId));
     expect(recoveries.every(value => !held.has(value.workId)
       && value.spentAt === null && value.recoveryAttemptId === null)).toBe(true);
+    expect(recoveries.some(value => value.workId === edited.generationId || value.workId === deleted.generationId)).toBe(false);
     const persisted = await db.select({
       accessScope: memoryReviewTurns.accessScope,
       acceptedModelBinding: memoryReviewTurns.acceptedModelBinding,
@@ -284,6 +300,7 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       fixtures.map(value => value.generationId),
     ));
     await db.delete(memoryReviewTurns).where(inArray(memoryReviewTurns.id, [...turnIds, ...interleaved.map(row => row.id)]));
+    await db.delete(sessionMessages).where(eq(sessionMessages.sessionId, session.id));
     await db.delete(sessions).where(eq(sessions.id, session.id));
     await db.delete(rooms).where(eq(rooms.id, room.id));
     await db.delete(namespaces).where(eq(namespaces.id, namespace.id));

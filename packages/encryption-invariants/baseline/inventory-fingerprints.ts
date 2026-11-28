@@ -18,14 +18,15 @@ export const SOURCE_ALARM_BASELINE = {
 // unspent-authorization constraint, paged recovery checkpoint, and family
 // lookup index append migrations 0392-0398. Source-change commitments, the
 // fresh-service-input fence, checkpoint-family eligibility, and all-state
-// connected-family binding/grant lookup append migrations 0399-0402. The focused
+// connected-family binding/grant lookup append migrations 0399-0402. The
+// Memory source fingerprint and invalidation time follow in 0403. The focused
 // migration inventory pins those exact generated SQL and snapshot bytes and
 // proves the earlier schema/snapshot tree remains byte-identical without a DB.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 403,
-  "snapshots": 374,
-  "tip": 402,
-  "sha256": "d908ad4d026aa20a3caff198654a6cbd09f6f6c60ba2c6d3e262fc83f541cb3b"
+  "migrations": 404,
+  "snapshots": 375,
+  "tip": 403,
+  "sha256": "0ffa311affb5cec7e9c4ff6202ba557beab548fe4f18488a8b26250bcbdf7f62"
 } as const;
 
 /**
@@ -89,13 +90,15 @@ export const MIGRATION_TREE_BASELINE = {
 // every exact locator and the four generated migration/snapshot pairs.
 // The final Journal dispatch check retires a stale compaction grant and can
 // remove an unspent extraction grant when its source disappears.
+// A Memory review records when the approved transcript snapshot changes.
+// Only the funding check on the claimed turns can replace a typed commitment.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1711,
+  "count": 1712,
   "insert": 539,
-  "update": 960,
+  "update": 961,
   "delete": 194,
   "unresolved": 18,
-  "sha256": "4ded57bd88cd41430765e196230dfac152ecc0e3bf990001bfc30bef2778e18f"
+  "sha256": "22ac7a0d977dac05f138f446f9995eea1baf615055a58be5e8ee4b0e91d376cd"
 } as const;
 
 /**

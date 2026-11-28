@@ -2822,6 +2822,13 @@
       "when": 1795809998935,
       "tag": "0402_romantic_frightful_four",
       "breakpoints": true
+    },
+    {
+      "idx": 403,
+      "version": "7",
+      "when": 1795873143791,
+      "tag": "0403_brainy_puppet_master",
+      "breakpoints": true
     }
   ]
 }

@@ -20,8 +20,11 @@ export interface OpenMemoryOperationInput {
   readonly requireCurrentServicePayer?: boolean;
   /** Reflection batches retain one accepted payer/model across proven claim subsets. */
   readonly bindingScope?: "exact_operation" | "claim_family";
-  /** CAS owner returns its existing binding without evaluating resolve again. */
-  readonly bind: (resolve: (legacyServiceModelId?: string) => Promise<MemoryOperationBinding>) => Promise<MemoryOperationBinding>;
+  /** CAS owner normally returns its binding; explicit manual service recovery may request a trusted rebind. */
+  readonly bind: (resolve: (
+    legacyServiceModelId?: string,
+    previousServiceBinding?: Extract<MemoryOperationBinding, { kind: "service" }>,
+  ) => Promise<MemoryOperationBinding>) => Promise<MemoryOperationBinding>;
   readonly assertCurrent: () => Promise<void>;
   readonly resolveServiceModel: () => string;
   readonly openHumanSession?: (humanUserId: string, recheck: () => Promise<void>) => CapabilityFundingSession;
@@ -33,6 +36,11 @@ export interface AdmittedMemoryOperation {
   readonly fundingSession?: ForegroundChatFundingSession;
   assertCurrent(): Promise<void>;
   assertExposure(dependencies: readonly DurableModelExposureDependency[] | undefined): Promise<void>;
+}
+
+/** Explicit manual service recovery proved that its accepted evidence changed. */
+export class MemoryReviewRecoveryEvidenceChangedError extends PersonalMemoryEvidenceChangedError {
+  override name = "MemoryReviewRecoveryEvidenceChangedError";
 }
 
 type HistoricalMemoryEvidenceReaders = Pick<
@@ -78,15 +86,36 @@ export async function openMemoryOperation(input: OpenMemoryOperationInput): Prom
     ])).digest("base64url")}`;
   const inputCommitment = commitment(dependencies);
   const openSession = input.openHumanSession ?? createCapabilityFundingSession;
+  let manualServiceRecovery = false;
+  let reboundServiceOperation = false;
   const recheckEvidence = async () => {
     await input.assertCurrent();
     const current = await input.dependencies();
-    if (commitment(current) !== inputCommitment) throw new PersonalMemoryEvidenceChangedError();
-    assertSamePersonalMemoryEvidence(initial, await classify(current));
+    try {
+      if (commitment(current) !== inputCommitment) throw new PersonalMemoryEvidenceChangedError();
+      const payer = await classify(current);
+      assertSamePersonalMemoryEvidence(initial, payer);
+      if (reboundServiceOperation && (!current?.length || payer.kind !== "service")) {
+        throw new PersonalMemoryEvidenceChangedError();
+      }
+    } catch (error) {
+      if (manualServiceRecovery && error instanceof PersonalMemoryEvidenceChangedError) {
+        throw new MemoryReviewRecoveryEvidenceChangedError();
+      }
+      throw error;
+    }
   };
   let resolverEvaluated = false;
-  const binding = parseMemoryOperationBinding(await input.bind(async (legacyServiceModelId) => {
+  const binding = parseMemoryOperationBinding(await input.bind(async (legacyServiceModelId, previousServiceBinding) => {
     resolverEvaluated = true;
+    if (previousServiceBinding !== undefined) {
+      manualServiceRecovery = true;
+      if (previousServiceBinding.role !== input.role) throw new MemoryReviewRecoveryEvidenceChangedError();
+      if (previousServiceBinding.inputCommitment === inputCommitment) return previousServiceBinding;
+      if (!dependencies?.length || initial.kind !== "service") throw new MemoryReviewRecoveryEvidenceChangedError();
+      reboundServiceOperation = true;
+      return { ...previousServiceBinding, inputCommitment };
+    }
     if (initial.kind === "service" || legacyServiceModelId !== undefined) return {
       version: 1, kind: "service", role: input.role, modelId: legacyServiceModelId ?? input.resolveServiceModel(), inputCommitment,
     };
@@ -119,7 +148,7 @@ export async function openMemoryOperation(input: OpenMemoryOperationInput): Prom
     assertCurrent,
     async assertExposure(exposure) {
       await assertCurrent();
-      if (input.requireCurrentServicePayer || binding.kind === "human") {
+      if (input.requireCurrentServicePayer || reboundServiceOperation || binding.kind === "human") {
         assertSamePersonalMemoryEvidence(initial, await classify(exposure));
       }
     },

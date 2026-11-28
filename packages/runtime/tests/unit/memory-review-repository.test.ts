@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { encryptionTransitionPolicy, memoryReviewModelRecoveries, memoryReviewTurns, type SQL } from "@nautilo/db";
+import { encryptionTransitionPolicy, memoryReviewModelRecoveries, memoryReviewTurns, sessionMessages, type SQL } from "@nautilo/db";
 import {
+  memoryReviewSourceRevisionFingerprint,
   PostgresMemoryReviewRepository,
   selectMemoryReviewPrefix,
 } from "../../src/memory-review/repository";
@@ -41,6 +42,15 @@ describe("Memory durable coverage selection", () => {
 });
 
 describe("Memory repository query contracts without a live database", () => {
+  test("source authorization fingerprint binds only structural revisions and the exact predecessor", () => {
+    const base = [{ id: 7, sessionId: "session", editRevision: 2, cryptoObjectId: "message:v2:abc" }];
+    const fingerprint = memoryReviewSourceRevisionFingerprint(base, "covered-turn");
+    expect(fingerprint).toHaveLength(64);
+    expect(memoryReviewSourceRevisionFingerprint([...base].reverse(), "covered-turn")).toBe(fingerprint);
+    expect(memoryReviewSourceRevisionFingerprint([{ ...base[0]!, editRevision: 3 }], "covered-turn")).not.toBe(fingerprint);
+    expect(memoryReviewSourceRevisionFingerprint(base, "other-covered-turn")).not.toBe(fingerprint);
+  });
+
   test("requestModelRecovery blocks a Strict transition after its injected preflight", async () => {
     const calls: string[] = [];
     let preflights = 0;
@@ -119,6 +129,11 @@ describe("Memory repository query contracts without a live database", () => {
       ...turn("1", "completed"),
       id: claim.turnIds[0]!,
       generationId: claim.workId,
+      sessionId: "session",
+      threadId: claim.threadId,
+      agentId: claim.agentId,
+      ownerId: claim.ownerId,
+      accessScope: "namespace",
       attemptId: claim.attemptId,
       receiptId: null,
       leaseUntil: new Date("2099-01-01T00:00:00Z"),
@@ -135,19 +150,31 @@ describe("Memory repository query contracts without a live database", () => {
       headTurnId: claim.turnIds[0]!,
       recoveryAttemptId: claim.attemptId,
       turnIds: claim.turnIds,
+      sourceRevisionFingerprint: memoryReviewSourceRevisionFingerprint([
+        { id: 1, sessionId: "session", editRevision: 0, cryptoObjectId: null },
+      ]),
+      sourceChangedAt: null,
       spentAt: null,
     };
+    let memoryTurnSelect = 0;
     const tx = {
       execute: async () => [],
       select: () => ({
         from: (table: unknown) => table === encryptionTransitionPolicy
           ? { where: async () => [{ mode: "plaintext_only", shadowBehavior: "fallback", revision: 1 }] }
           : { where: () => {
-              const rows = table === memoryReviewTurns ? [currentTurn] : [recovery];
-              return {
+              const rows = table === memoryReviewTurns
+                ? (++memoryTurnSelect === 3 ? [] : [currentTurn])
+                : table === sessionMessages
+                  ? [{ id: 1, sessionId: "session", editRevision: 0, cryptoObjectId: null,
+                      createdAt: NOW, editedAt: null }]
+                  : [recovery];
+              const builder = {
                 for: async () => rows,
-                orderBy: () => ({ for: async () => rows }),
+                orderBy: () => builder,
+                limit: () => builder,
               };
+              return builder;
             } },
       }),
       update: () => ({ set: () => ({ where: () => ({
@@ -250,6 +277,29 @@ describe("Memory repository query contracts without a live database", () => {
     expect(persisted).toEqual(upgraded);
   });
 
+  test("authorized recovery persists a trusted service rebind on the exact claimed turns", async () => {
+    const previous = { version: 1 as const, kind: "service" as const, role: "memoryReview" as const,
+      modelId: "service-model", inputCommitment: `hmac-sha256:${"a".repeat(43)}` };
+    const rebound = { ...previous, inputCommitment: `hmac-sha256:${"b".repeat(43)}` };
+    const current = { ...turn("1", "completed"), id: claim.turnIds[0]!, attemptId: claim.attemptId,
+      receiptId: null, leaseUntil: new Date("2099-01-01"), acceptedModelBinding: previous };
+    let persisted: unknown;
+    const db = { transaction: async <T>(run: (tx: unknown) => Promise<T>) => run({
+      select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ for: async () => [current] }) }) }) }),
+      update: () => ({ set: (value: { acceptedModelBinding: unknown }) => {
+        persisted = value.acceptedModelBinding;
+        return { where: () => ({ returning: async () => [{ id: current.id }] }) };
+      } }),
+    }) };
+    const repo = new PostgresMemoryReviewRepository(policy, db as never);
+    expect(await repo.bindModelOperation({ ...claim, modelRecovery: "authorized" }, async (legacy, accepted) => {
+      expect(legacy).toBeUndefined();
+      expect(accepted).toEqual(previous);
+      return rebound;
+    })).toEqual(rebound);
+    expect(persisted).toEqual(rebound);
+  });
+
   test("candidate discovery reads only work metadata and partitions predecessors by Agent and authority scope", async () => {
     const queries: SQL[] = [];
     const db = { execute: async (query: SQL) => { queries.push(query); return []; } };
@@ -264,6 +314,9 @@ describe("Memory repository query contracts without a live database", () => {
     expect(sql).toContain("p.access_scope=t.access_scope");
     expect(sql).toContain("t.failure_code IS NULL");
     expect(sql).toContain("t.failure_code='publication_uncertain' AND t.retry_at IS NULL");
+    expect(sql).toContain("recovery.source_revision_fingerprint IS NOT NULL");
+    expect(sql).toContain("recovery.source_revision_fingerprint IS NULL");
+    expect(sql).toContain("recovery.source_changed_at IS NULL");
     // Raw postgres-js query parameters cannot contain unencoded Date objects.
     expect(params.some((value: unknown) => value instanceof Date)).toBe(false);
   });
@@ -340,13 +393,24 @@ describe("Memory repository query contracts without a live database", () => {
       recoveryAttemptId: claim.attemptId,
       blockedAttemptId: "blocked-attempt",
       turnIds: [...claim.turnIds],
+      sourceRevisionFingerprint: memoryReviewSourceRevisionFingerprint([
+        { id: 1, sessionId: "session", editRevision: 0, cryptoObjectId: null },
+      ]), sourceChangedAt: null,
       spentAt: null, authorizedAt: NOW,
     };
-    const current = { id: "turn", state: "completed", sourceIds: [...claim.sourceIds], updatedAt: NOW };
+    const current = { id: "turn", state: "completed", sourceIds: [...claim.sourceIds], updatedAt: NOW,
+      sessionId: "session", threadId: claim.threadId, agentId: claim.agentId, ownerId: claim.ownerId,
+      accessScope: "namespace", acceptedModelBinding: { kind: "service" as const, modelId: "service-model" } };
+    const source = { id: 1, sessionId: "session", editRevision: 0, cryptoObjectId: null,
+      createdAt: NOW, editedAt: null };
     const db = {
-      select: () => ({ from: (table: unknown) => ({ where: () => ({
-        for: async () => table === memoryReviewModelRecoveries ? [recovery] : [current],
-      }) }) }),
+      select: (selection?: unknown) => ({ from: (table: unknown) => ({ where: () => {
+        const rows = table === memoryReviewModelRecoveries ? [recovery]
+          : table === sessionMessages ? [source]
+            : selection === undefined ? [current] : [];
+        const builder = { for: async () => rows, orderBy: () => builder, limit: () => builder };
+        return builder;
+      } }) }),
       insert: () => ({ values: () => ({ onConflictDoNothing: async () => {} }) }),
       update: (table: unknown) => ({ set: (values: Record<string, unknown>) => ({
         where: async () => { updates.push({ table, values }); },
@@ -365,13 +429,37 @@ describe("Memory repository query contracts without a live database", () => {
       { table: memoryReviewTurns, values: { attemptId: "blocked-attempt", leaseUntil: null } },
     ]);
     expect(updates[1]!.values).not.toHaveProperty("updatedAt");
+    current.acceptedModelBinding = {
+      version: 1, kind: "service", role: "memoryReview", modelId: "service-model",
+      inputCommitment: `hmac-sha256:${"z".repeat(43)}`,
+    } as never;
+    updates.length = 0;
+    await repo.fail({ claim: recoveryClaim, phase: "model", reason: "cancelled",
+      retryable: false, now: NOW });
+    expect(updates).toEqual([
+      { table: memoryReviewModelRecoveries, values: { recoveryAttemptId: null } },
+      { table: memoryReviewTurns, values: { attemptId: "blocked-attempt", leaseUntil: null } },
+    ]);
+    updates.length = 0;
+    await repo.fail({ claim: recoveryClaim, phase: "model", reason: "source_changed",
+      retryable: false, now: NOW });
+    expect(updates).toContainEqual({ table: memoryReviewModelRecoveries, values: { sourceChangedAt: NOW } });
+    expect(updates.at(-1)?.values).toMatchObject({ failureCode: "provider_outcome_unknown", retryAt: null });
+    current.acceptedModelBinding = { kind: "service", modelId: "service-model" } as never;
+    recovery.sourceRevisionFingerprint = null as never;
+    updates.length = 0;
+    await repo.fail({ claim: recoveryClaim, phase: "model", reason: "source_or_lease_changed",
+      retryable: false, now: NOW });
+    expect(updates).toContainEqual({ table: memoryReviewModelRecoveries, values: { sourceChangedAt: NOW } });
+    expect(updates.at(-1)?.values).toMatchObject({ failureCode: "provider_outcome_unknown", retryAt: null });
     // A turn may keep its ID and timestamps while its evidence changes.
+    recovery.sourceRevisionFingerprint = memoryReviewSourceRevisionFingerprint([source]);
     current.sourceIds.push(999);
     updates.length = 0;
     await repo.fail({ claim: recoveryClaim, phase: "model", reason: "source_or_lease_changed",
       retryable: false, now: NOW });
-    expect(updates.some(update => update.table === memoryReviewModelRecoveries)).toBe(false);
-    expect(updates[0]?.values).toMatchObject({ failureCode: "provider_outcome_unknown", retryAt: null });
+    expect(updates).toContainEqual({ table: memoryReviewModelRecoveries, values: { sourceChangedAt: NOW } });
+    expect(updates.at(-1)?.values).toMatchObject({ failureCode: "provider_outcome_unknown", retryAt: null });
   });
 
   test("a spent recovery with an ambiguous provider failure remains quarantined", async () => {
