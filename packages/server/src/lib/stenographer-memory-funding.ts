@@ -8,6 +8,7 @@ import { createRoomSideModelInvoker, extractionModelExposureDependencies, compac
   StenographerInputAuthorityUnavailableError,
   type ExtractionClaim, type CompactionClaim, type AdmittedStenographerModel } from "@nautilo/runtime";
 import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
+import type { PersonalMemoryEvidence } from "@nautilo/reflection-bridge/server";
 import { parseMemoryOperationBinding, type MemoryOperationBinding } from "@nautilo/types";
 import { openMemoryOperation, type OpenMemoryOperationInput } from "./personal-memory-operation";
 import { getCurrentProtectedMemoryEvidence } from "./protected-memory-model-evidence";
@@ -19,11 +20,11 @@ type Common = Pick<OpenMemoryOperationInput, "ports" | "budget" | "commitmentKey
   db: DirectDatabase;
   resolveServiceModel(): string;
   assertAvailable(): Promise<void>;
-  admitsCurrentServiceInputs?: (
+  classifyCurrentInputs?: (
     tx: Transaction,
     dependencies: readonly DurableModelExposureDependency[],
     roomId: string,
-  ) => Promise<boolean>;
+  ) => Promise<PersonalMemoryEvidence | null>;
   readRetiredJournalPredecessor?: (dependency: RecordDependency, roomId: string) => Promise<DurableRecordEnvelope | null>;
   /** Pure injection seam for funding-boundary tests. */
   createInvoker?: typeof createRoomSideModelInvoker;
@@ -345,12 +346,14 @@ export function createStenographerMemoryFunding(input: Common) {
               parseMemoryOperationBinding(batch.accepted),
               admitted.modelId,
             );
-            if (!expectedDependencies?.length
-              || await input.admitsCurrentServiceInputs?.(
-                tx,
-                expectedDependencies,
-                claim.roomId,
-              ) !== true) {
+            const currentEvidence = expectedDependencies?.length
+              ? await input.classifyCurrentInputs?.(
+                  tx,
+                  expectedDependencies,
+                  claim.roomId,
+                )
+              : null;
+            if (currentEvidence === null || currentEvidence === undefined) {
               // Extraction grants cannot carry replacement digests. Remove
               // this unspent, source-invalid consent so an expired worker
               // cannot reclaim it against the old batch prompt.
@@ -381,11 +384,11 @@ export function createStenographerMemoryFunding(input: Common) {
               ?? recovery.authorizedInputDigest;
             const payerCurrent = !recovery.freshServiceInputs
               || (coordinates?.dependencies?.length
-                && await input.admitsCurrentServiceInputs?.(
+                && (await input.classifyCurrentInputs?.(
                   tx,
                   coordinates.dependencies,
                   claim.roomId,
-                ) === true);
+                ))?.kind === "service");
             if (coordinates === null
               || coordinates.workId !== operationKey
               || coordinates.rebuildGeneration !== recovery.rebuildGeneration

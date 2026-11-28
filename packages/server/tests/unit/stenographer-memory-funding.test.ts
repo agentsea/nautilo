@@ -119,8 +119,25 @@ function ordinaryExtractionDatabase(
   const updates: Record<string, unknown>[] = [];
   const select = (fields: Record<string, unknown>) => {
     const keys = Object.keys(fields);
-    const rows = keys.includes("acceptedPlan")
+    const rows = keys.includes("mode")
+      ? [{ mode: "plaintext_only", shadowBehavior: "best_effort", revision: 1 }]
+      : keys.includes("rebuildGeneration") && keys.includes("leaseToken")
+        ? [{
+            rebuildGeneration: 0,
+            leaseToken: LEASE,
+            leaseExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
+            accepted,
+            acceptedPlan: null,
+          }]
+      : keys.includes("acceptedPlan")
       ? [{ roomId: ROOM, accepted, acceptedPlan: null }]
+      : keys.includes("authorizedInputDigest") && manualRecovery
+        ? [{
+            id: manualRecovery.id,
+            rebuildGeneration: 0,
+            authorizedInputDigest: null,
+            freshServiceInputs: false,
+          }]
       : keys.includes("targetModelId") && manualRecovery
         ? [{ targetModelId: manualRecovery.targetModelId }]
       : keys.length === 1 && keys[0] === "id" && manualRecovery
@@ -129,10 +146,10 @@ function ordinaryExtractionDatabase(
         ? [...replayRows]
       : keys.includes("disabledAt")
         ? (authorityReads += 1, [{ id: 41, disabledAt }])
-        : keys.includes("accepted")
-          ? [{ accepted }]
+      : keys.includes("accepted")
+          ? [{ accepted, ...(keys.includes("status") ? { status: "running" } : {}) }]
           : [{ roomId: ROOM }];
-    const result = keys.length === 1 && keys[0] === "id" && manualRecoveryLock
+    const result = keys.includes("authorizedInputDigest") && manualRecoveryLock
       ? manualRecoveryLock.then(() => rows)
       : Promise.resolve(rows);
     const query = {
@@ -140,6 +157,12 @@ function ordinaryExtractionDatabase(
       innerJoin() { return this; },
       where() { return this; },
       for() { return this; },
+      then<TResult1 = Record<string, unknown>[], TResult2 = never>(
+        onfulfilled?: ((value: Record<string, unknown>[]) => TResult1 | PromiseLike<TResult1>) | null,
+        onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+      ) {
+        return result.then(onfulfilled, onrejected);
+      },
       limit: () => Object.assign(result, {
         for: () => result,
       }),
@@ -162,7 +185,8 @@ function ordinaryExtractionDatabase(
   const transaction = async <T>(run: (tx: {
     select: typeof select;
     update: typeof update;
-  }) => Promise<T>) => run({ select, update });
+    execute: () => Promise<unknown>;
+  }) => Promise<T>) => run({ select, update, execute: () => Promise.resolve([]) });
   return {
     db: { select, update, transaction } as unknown as DirectDatabase,
     accepted: () => accepted,
@@ -562,6 +586,7 @@ describe("ordinary Stenographer Memory funding", () => {
       commitmentKey: new Uint8Array(32).fill(23),
       resolveServiceModel: () => "openai:other-model",
       assertAvailable: () => Promise.resolve(),
+      classifyCurrentInputs: async () => ({ kind: "human", humanUserId: HUMAN }),
       createInvoker: (options) => {
         guard = options.beforeProviderDispatch;
         return async () => {
@@ -619,6 +644,7 @@ describe("ordinary Stenographer Memory funding", () => {
       commitmentKey: new Uint8Array(32).fill(31),
       resolveServiceModel: () => "openai:other-model",
       assertAvailable: () => Promise.resolve(),
+      classifyCurrentInputs: async () => ({ kind: "human", humanUserId: HUMAN }),
       createInvoker: (options) => {
         guard = options.beforeProviderDispatch;
         return async () => "unreachable";

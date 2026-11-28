@@ -8,12 +8,12 @@ import {
   ensureDatabase,
   eq,
   inArray,
-  isNull,
   llmUsageEvents,
   namespaces,
   queryStenographerAdminStatus,
   reflectionRecordPayloadRepresentationHeads,
   reflectionRecordPayloadRepresentations,
+  reflectionRecordPublications,
   reflectionRecords,
   roomEvents,
   roomJournalBatches,
@@ -21,6 +21,7 @@ import {
   roomJournalState,
   roomMembers,
   rooms,
+  serverAdmission,
   sessionMessages,
   sessions,
   sql,
@@ -29,8 +30,14 @@ import {
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import type { DurableRecordEnvelope } from "@nautilo/reflection/durable";
 import {
+  encodeDurableRecordEnvelope,
+  type PersonalMemoryEvidence,
+} from "@nautilo/reflection-bridge/server";
+import {
   deleteMessageHardInTx,
   editCanonicalTranscriptMessageInTx,
+  findRoomByNamespaceIdWith,
+  getRoomWithAccessWith,
 } from "@nautilo/trust";
 import {
   candidateRoomIds,
@@ -48,6 +55,11 @@ import {
   type ExtractionClaim,
 } from "@nautilo/runtime";
 import { createStenographerMemoryFunding } from "../../src/lib/stenographer-memory-funding";
+import {
+  classifyCurrentJournalRecoveryInputs,
+  createPersonalMemoryEvidencePort,
+  readCurrentOrdinaryMemoryEvidenceRecordWith,
+} from "../../src/lib/personal-memory-evidence-port";
 import { requestManualJournalRecovery } from "../../src/lib/request-manual-journal-recovery";
 
 type Db = ReturnType<typeof createDirectDb>;
@@ -84,6 +96,8 @@ afterAll(async () => {
     await db.delete(roomMembers).where(eq(roomMembers.roomId, fixture.roomId));
     await db.delete(rooms).where(eq(rooms.id, fixture.roomId));
     if (fixture.recordIds.length > 0) {
+      // Publication receipts are immutable. Retire their Records through the
+      // supported purge disposition, then remove only mutable payload state.
       await db.update(reflectionRecords).set({ disposition: "purged" }).where(inArray(
         reflectionRecords.recordId,
         fixture.recordIds,
@@ -101,6 +115,7 @@ afterAll(async () => {
     await db.delete(actors).where(eq(actors.id, fixture.agentActorId));
     await db.delete(agents).where(eq(agents.id, fixture.agentId));
     await db.delete(actors).where(eq(actors.id, fixture.userActorId));
+    await db.delete(serverAdmission).where(eq(serverAdmission.userId, fixture.userId));
     await db.delete(users).where(eq(users.id, fixture.userId));
   }
   await db?.end();
@@ -112,6 +127,7 @@ async function fixture(label: string): Promise<Fixture> {
     name: `Journal recovery ${label}`,
     email: `journal-recovery-${id}@integration.test`,
   }).returning({ id: users.id });
+  await db.insert(serverAdmission).values({ userId: user!.id, admitted: true });
   const [human] = await db.insert(actors).values({
     ownerId: user!.id, displayName: "Journal recovery operator", kind: "user",
   }).returning({ id: actors.id });
@@ -135,6 +151,10 @@ async function fixture(label: string): Promise<Fixture> {
     { roomId, actorId: human!.id, roomRole: "admin", joinedAt: BASE },
     { roomId, actorId: agentActor!.id, roomRole: "member", joinedAt: BASE },
   ]);
+  // Direct fixture inserts bypass the canonical membership reconciler. Restore
+  // its single-Human audience projection after the membership trigger runs.
+  await db.update(rooms).set({ humanActorIds: [human!.id] })
+    .where(eq(rooms.id, roomId));
   const [session] = await db.insert(sessions).values({
     threadId: `journal-recovery:${id}`, ownerId: user!.id, personaId: "owner",
     agentId: agent!.id, roomId, channel: "electron",
@@ -156,11 +176,22 @@ async function fixture(label: string): Promise<Fixture> {
   return value;
 }
 
+type FundingOptions = Readonly<{
+  afterOuterCheck?: () => Promise<void>;
+  observeCurrentEvidence?: (evidence: PersonalMemoryEvidence) => void;
+  budget?: Readonly<{
+    maxVisitedRecords: number;
+    maxTraversalWork: number;
+  }>;
+}>;
+
 function funding(
   createInvoker: () => (prompt: string) => Promise<string>,
   humanId: string,
-  afterOuterCheck?: () => Promise<void>,
+  fundingOptions: FundingOptions = {},
 ) {
+  const budget = fundingOptions.budget
+    ?? { maxVisitedRecords: 256, maxTraversalWork: 1_024 };
   return createStenographerMemoryFunding({
     db,
     ports: {
@@ -192,38 +223,46 @@ function funding(
         humanIds: [humanId], includesPublicBoundary: false,
       }),
     },
-    budget: { maxVisitedRecords: 256, maxTraversalWork: 1_024 },
+    budget,
     commitmentKey: new Uint8Array(32).fill(29),
     resolveServiceModel: () => MODEL,
     assertAvailable: () => Promise.resolve(),
-    admitsCurrentServiceInputs: async (tx, dependencies) => {
-      const messageIds = [...new Set(dependencies.flatMap((dependency) => {
-        if (dependency.kind !== "source"
-          || dependency.sourceKind !== "message") return [];
-        const match = /^message:(\d+)$/u.exec(dependency.logicalSourceRef);
-        if (match === null) return [];
-        const messageId = Number(match[1]);
-        return Number.isSafeInteger(messageId) && messageId > 0
-          ? [messageId]
-          : [];
-      }))];
-      if (messageIds.length === 0) return dependencies.length > 0;
-      const current = await tx.select({ id: sessionMessages.id })
-        .from(sessionMessages)
-        .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
-        .innerJoin(users, eq(users.id, sessions.ownerId))
-        .where(and(
-          inArray(sessionMessages.id, messageIds),
-          isNull(users.disabledAt),
-        ));
-      return current.length === messageIds.length;
+    classifyCurrentInputs: async (tx, dependencies) => {
+      const evidence = await classifyCurrentJournalRecoveryInputs({
+        dependencies,
+        budget,
+        ports: createPersonalMemoryEvidencePort({
+          db: tx,
+          selected: () => ({
+            selectedRepresentation: "ordinary",
+            migrationGeneration: 1,
+          }),
+          fingerprintProfileSoul: (profile) => [
+            profile.agentId,
+            profile.profileId,
+            profile.userId,
+            profile.soulRevision,
+            profile.soulFile,
+          ].join(":"),
+          readRecord: (dependency) =>
+            readCurrentOrdinaryMemoryEvidenceRecordWith(tx, dependency),
+          roomQueries: {
+            findRoomByNamespaceId: (namespaceId) =>
+              findRoomByNamespaceIdWith(tx, namespaceId),
+            getRoomWithAccess: (roomId) =>
+              getRoomWithAccessWith(tx, roomId),
+          },
+        }),
+      });
+      if (evidence !== null) fundingOptions.observeCurrentEvidence?.(evidence);
+      return evidence;
     },
     createInvoker: options => {
       const invoke = createInvoker();
       return async (prompt, signal) => {
         signal?.throwIfAborted();
         await options.assertCurrent?.();
-        await afterOuterCheck?.();
+        await fundingOptions.afterOuterCheck?.();
         await options.beforeProviderDispatch?.();
         return invoke(prompt);
       };
@@ -270,7 +309,6 @@ async function addNativeCompactionEvents(
 ): Promise<void> {
   const recordIds = Array.from({ length: count }, () => randomUUID());
   f.recordIds.push(...recordIds);
-  const encoder = new TextEncoder();
   await db.transaction(async (tx) => {
     await tx.insert(reflectionRecords).values(recordIds.map(recordId => ({
       recordId,
@@ -289,9 +327,13 @@ async function addNativeCompactionEvents(
         representation: "ordinary" as const,
         representationGeneration: 1,
         payloadVersion: 1,
-        plaintextPayloadBytes: encoder.encode(JSON.stringify({
-          statement: `Synthetic compaction fact ${startSequence + index} ${"x".repeat(520)}`,
-        })),
+        plaintextPayloadBytes: encodeDurableRecordEnvelope(
+          nativeJournalRecord(
+            f,
+            recordId,
+            `Synthetic compaction fact ${startSequence + index} ${"x".repeat(520)}`,
+          ),
+        ),
         createdAt: BASE,
       })),
     );
@@ -300,6 +342,21 @@ async function addNativeCompactionEvents(
         recordId,
         representation: "ordinary" as const,
         currentRepresentationGeneration: 1,
+        updatedAt: BASE,
+      })),
+    );
+    await tx.insert(reflectionRecordPublications).values(
+      recordIds.map((recordId, index) => ({
+        publicationId: `manual-journal-recovery:${randomUUID()}`,
+        recordId,
+        representation: "ordinary" as const,
+        representationGeneration: 1,
+        requestCommitment: new Uint8Array(32).fill((startSequence + index) % 255 || 1),
+        publicationBindingRef: `manual-journal-recovery:${randomUUID()}`,
+        state: "complete" as const,
+        productAttachedAt: BASE,
+        completedAt: BASE,
+        createdAt: BASE,
         updatedAt: BASE,
       })),
     );
@@ -322,6 +379,74 @@ async function addNativeCompactionEvents(
       nativeAttachedAt: BASE,
       createdAt: BASE,
     })));
+  });
+}
+
+function nativeJournalRecord(
+  f: Fixture,
+  recordId: string,
+  statement: string,
+): DurableRecordEnvelope {
+  return {
+    recordRef: recordId,
+    lifecycle: "current",
+    structuralHeight: 0,
+    processingGeneration: 1,
+    semantic: {
+      posture: "derived",
+      observedContentFingerprint: `fixture:${recordId}`,
+      statement,
+      sourceOwnedKind: "journal_event:fact",
+      sourceDependencies: [],
+      anchors: [{ kind: "room", role: "origin", anchorRef: f.roomId }],
+      childRecordRefs: [],
+      producer: {
+        producerRef: "stenographer",
+        policyVersion: "manual-journal-recovery-fixture-v1",
+      },
+      terminalAuthorityLeafHandles: [f.namespaceId],
+      modelExposureDependencies: [],
+    },
+  };
+}
+
+async function rewriteNativeRecordRepresentation(
+  f: Fixture,
+  recordId: string,
+  statement: string,
+  now: Date,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.insert(reflectionRecordPayloadRepresentations).values({
+      recordId,
+      representation: "ordinary",
+      representationGeneration: 2,
+      payloadVersion: 1,
+      plaintextPayloadBytes: encodeDurableRecordEnvelope(
+        nativeJournalRecord(f, recordId, statement),
+      ),
+      createdAt: now,
+    });
+    await tx.insert(reflectionRecordPublications).values({
+      publicationId: `manual-journal-recovery:${randomUUID()}`,
+      recordId,
+      representation: "ordinary",
+      representationGeneration: 2,
+      requestCommitment: new Uint8Array(32).fill(31),
+      publicationBindingRef: `manual-journal-recovery:${randomUUID()}`,
+      state: "complete",
+      productAttachedAt: now,
+      completedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await tx.update(reflectionRecordPayloadRepresentationHeads).set({
+      currentRepresentationGeneration: 2,
+      updatedAt: now,
+    }).where(and(
+      eq(reflectionRecordPayloadRepresentationHeads.recordId, recordId),
+      eq(reflectionRecordPayloadRepresentationHeads.representation, "ordinary"),
+    ));
   });
 }
 
@@ -492,7 +617,12 @@ describe("manual Journal recovery on PostgreSQL", () => {
     const recovered = await tryClaimRoom(db, f.roomId, new Date(request.now.getTime() + 1_000));
     expect(recovered?.manualModelRecoveryId).toBeString();
     let calls = 0;
-    const admitted = await funding(() => async () => (calls += 1, "[]"), f.userId)
+    const currentEvidence: PersonalMemoryEvidence[] = [];
+    const admitted = await funding(
+      () => async () => (calls += 1, "[]"),
+      f.userId,
+      { observeCurrentEvidence: (evidence) => currentEvidence.push(evidence) },
+    )
       .admitExtractionModel(
         recovered as ExtractionClaim,
         extractionModelExposureDependencies(recovered as ExtractionClaim),
@@ -511,6 +641,7 @@ describe("manual Journal recovery on PostgreSQL", () => {
       .toMatch(/^hmac-sha256:[A-Za-z0-9_-]{43}$/);
     await admitted.invoke("synthetic prompt");
     expect(calls).toBe(1);
+    expect(currentEvidence).toEqual([{ kind: "human", humanUserId: f.userId }]);
     const [spent] = await db.select().from(roomJournalModelRecoveries).where(eq(
       roomJournalModelRecoveries.id,
       recovered!.manualModelRecoveryId!,
@@ -542,23 +673,28 @@ describe("manual Journal recovery on PostgreSQL", () => {
       const admitted = await funding(
         () => async () => (calls += 1, "[]"),
         f.userId,
-        async () => {
-          if (mutated) return;
-          mutated = true;
-          await db.transaction(async (tx) => {
-            if (mutation === "edit") {
-              const edited = await editCanonicalTranscriptMessageInTx(tx, {
-                messageId: f.messageId,
-                expectedRevision: 0,
-                content: "Synthetic Journal evidence edited after approval",
-                clearCryptoObjectId: true,
-                editedAt: new Date(authorizedAt.getTime() + 2_000),
-              });
-              expect(edited).not.toBeNull();
-              return;
-            }
-            await deleteMessageHardInTx(tx, f.messageId);
-          });
+        {
+          afterOuterCheck: async () => {
+            if (mutated) return;
+            mutated = true;
+            await db.transaction(async (tx) => {
+              if (mutation === "edit") {
+                const edited = await editCanonicalTranscriptMessageInTx(tx, {
+                  messageId: f.messageId,
+                  expectedRevision: 0,
+                  content: "Synthetic Journal evidence edited after approval",
+                  clearCryptoObjectId: true,
+                  editedAt: new Date(authorizedAt.getTime() + 2_000),
+                });
+                expect(edited).not.toBeNull();
+                return;
+              }
+              await deleteMessageHardInTx(tx, f.messageId);
+            });
+          },
+          ...(mutation === "delete"
+            ? { budget: { maxVisitedRecords: 256, maxTraversalWork: 0 } }
+            : {}),
         },
       ).admitExtractionModel(
         claim,
@@ -626,36 +762,24 @@ describe("manual Journal recovery on PostgreSQL", () => {
       const admitted = await funding(
         () => async () => (calls += 1, "compaction result"),
         f.userId,
-        async () => {
-          if (mutated || scenario === "unchanged") return;
-          mutated = true;
-          await db.transaction(async (tx) => {
-            const recordId = f.recordIds[0]!;
-            await tx.insert(reflectionRecordPayloadRepresentations).values({
-              recordId,
-              representation: "ordinary",
-              representationGeneration: 2,
-              payloadVersion: 1,
-              plaintextPayloadBytes: new TextEncoder().encode(JSON.stringify({
-                statement: `Rewritten same-window compaction fact. ${"x".repeat(520)}`,
-              })),
-              createdAt: new Date(authorizedAt.getTime() + 2_000),
-            });
-            await tx.update(reflectionRecordPayloadRepresentationHeads).set({
-              currentRepresentationGeneration: 2,
-              updatedAt: new Date(authorizedAt.getTime() + 2_000),
-            }).where(and(
-              eq(reflectionRecordPayloadRepresentationHeads.recordId, recordId),
+        {
+          afterOuterCheck: async () => {
+            if (mutated || scenario === "unchanged") return;
+            mutated = true;
+            await rewriteNativeRecordRepresentation(
+              f,
+              f.recordIds[0]!,
+              `Rewritten same-window compaction fact. ${"x".repeat(520)}`,
+              new Date(authorizedAt.getTime() + 2_000),
+            );
+            const [head] = await db.select({
+              generation: reflectionRecordPayloadRepresentationHeads.currentRepresentationGeneration,
+            }).from(reflectionRecordPayloadRepresentationHeads).where(and(
+              eq(reflectionRecordPayloadRepresentationHeads.recordId, f.recordIds[0]!),
               eq(reflectionRecordPayloadRepresentationHeads.representation, "ordinary"),
             ));
-          });
-          const [head] = await db.select({
-            generation: reflectionRecordPayloadRepresentationHeads.currentRepresentationGeneration,
-          }).from(reflectionRecordPayloadRepresentationHeads).where(and(
-            eq(reflectionRecordPayloadRepresentationHeads.recordId, f.recordIds[0]!),
-            eq(reflectionRecordPayloadRepresentationHeads.representation, "ordinary"),
-          ));
-          expect(head?.generation).toBe(2);
+            expect(head?.generation).toBe(2);
+          },
         },
       ).admitCompactionModel(
         claim,
@@ -1426,18 +1550,12 @@ describe("manual Journal recovery on PostgreSQL", () => {
       .toEqual({ queued: 1, held: 0 });
     const beforeRevision = await db.transaction(tx => resolveCurrentOrdinaryCompactionCoordinates(tx, f.roomId));
     if (!beforeRevision) throw new Error("expected eligible inputs");
-    await db.transaction(async tx => {
-      const recordId = f.recordIds[0]!;
-      await tx.insert(reflectionRecordPayloadRepresentations).values({
-        recordId, representation: "ordinary", representationGeneration: 2, payloadVersion: 1,
-        plaintextPayloadBytes: new TextEncoder().encode(JSON.stringify({
-          statement: `Synthetic compaction fact 1. ${"x".repeat(520)}`,
-        })),
-      });
-      await tx.update(reflectionRecordPayloadRepresentationHeads).set({ currentRepresentationGeneration: 2 })
-        .where(and(eq(reflectionRecordPayloadRepresentationHeads.recordId, recordId),
-          eq(reflectionRecordPayloadRepresentationHeads.representation, "ordinary")));
-    });
+    await rewriteNativeRecordRepresentation(
+      f,
+      f.recordIds[0]!,
+      `Synthetic compaction fact 1. ${"x".repeat(520)}`,
+      reauthorizedAt,
+    );
     const afterRevision = await db.transaction(tx => resolveCurrentOrdinaryCompactionCoordinates(tx, f.roomId));
     expect(afterRevision?.workId).toBe(beforeRevision.workId);
     expect(afterRevision?.inputDigest).not.toBe(beforeRevision.inputDigest);
@@ -1478,7 +1596,10 @@ describe("manual Journal recovery on PostgreSQL", () => {
     expect(claim.manualRecoveryModelId).toBe(payerReauthorized.modelId);
     expect(claim.modelOperationId).not.toBe(coordinates.workId);
     let calls = 0;
-    const admitted = await funding(() => async () => { calls++; return "result"; }, f.userId)
+    const admitted = await funding(
+      () => async () => { calls++; return "result"; },
+      f.userId,
+    )
       .admitCompactionModel(claim, compactionModelExposureDependencies(claim));
     await admitted.invoke("compaction fixture");
     expect(calls).toBe(1);

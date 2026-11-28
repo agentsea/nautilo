@@ -48,7 +48,7 @@ import { protectedTaskForegroundCreationIdentity, protectedTaskForegroundCreatio
   protectedTaskForegroundUpdateIdentity } from "./routes/protected-task-foreground-creation-identity";
 import type { ProtectedTaskCreationPlanV1 } from "@nautilo/runtime";
 import {decodeBackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
-import { classifyPersonalMemoryEvidence, createHmacProtectedStenographerRecordCommitmentPort, createHmacRecordSemanticCommitmentPort, PersonalMemoryEvidenceChangedError, verifyRecordProductPostgresHandle } from "@nautilo/reflection-bridge/server";
+import { createHmacProtectedStenographerRecordCommitmentPort, createHmacRecordSemanticCommitmentPort, verifyRecordProductPostgresHandle } from "@nautilo/reflection-bridge/server";
 import { createProductionProtectedStenographerComposition } from "./background/stenographer-composition";
 import { createEventFeed } from "@nautilo/event-feed";
 import type { ServerEvent } from "@nautilo/types";
@@ -69,6 +69,7 @@ import {
   ordinaryHistoricalMemoryEvidenceReaders,
 } from "./lib/personal-memory-operation";
 import {
+  classifyCurrentJournalRecoveryInputs,
   createPersonalMemoryEvidencePort,
   readCurrentOrdinaryMemoryEvidenceRecordWith,
   readRetiredJournalMemoryEvidenceRecordWith,
@@ -2004,24 +2005,18 @@ export async function createApp(options?: CreateAppOptions) {
       getRoomWithAccess: (roomId) => getRoomWithAccessWith(db, roomId),
     },
   });
-  const admitsTransactionalServiceInputs = async (
+  const classifyTransactionalJournalInputs = async (
     db: Parameters<typeof createPersonalMemoryEvidencePort>[0]["db"],
-    dependencies: Parameters<typeof classifyPersonalMemoryEvidence>[0]["dependencies"],
+    dependencies: Parameters<typeof classifyCurrentJournalRecoveryInputs>[0]["dependencies"],
     roomId: string,
   ) => {
-    if (dependencies === undefined) return false;
-    try {
-      return (await classifyPersonalMemoryEvidence({
-        dependencies,
-        ports: transactionMemoryEvidence(db),
-        budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
-        readRetiredJournalPredecessor: (dependency) =>
-          readRetiredJournalMemoryEvidenceRecordWith(db, dependency, roomId),
-      })).kind === "service";
-    } catch (error) {
-      if (error instanceof PersonalMemoryEvidenceChangedError) return false;
-      throw error;
-    }
+    return classifyCurrentJournalRecoveryInputs({
+      dependencies,
+      ports: transactionMemoryEvidence(db),
+      budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
+      readRetiredJournalPredecessor: (dependency) =>
+        readRetiredJournalMemoryEvidenceRecordWith(db, dependency, roomId),
+    });
   };
   const memoryReviewRuntime = createServerMemoryReviewRuntime(maintenanceGate, {
     evidence: memoryEvidence, budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
@@ -2035,7 +2030,7 @@ export async function createApp(options?: CreateAppOptions) {
     get commitmentKey() { return getReflectionCommitmentKey(); }, resolveServiceModel: resolveStenographerModel,
     readRetiredJournalPredecessor: async (dependency, roomId) =>
       (await reflectionRuntime()).readRetiredJournalPredecessor(dependency, roomId),
-    admitsCurrentServiceInputs: admitsTransactionalServiceInputs,
+    classifyCurrentInputs: classifyTransactionalJournalInputs,
     assertAvailable: async () => {
       await maintenanceGate.assertAcceptingNewWork();
       const policy = await getEncryptionTransitionPolicy(getServerDirectDb());
@@ -2704,7 +2699,12 @@ export async function createApp(options?: CreateAppOptions) {
         if (exact !== input.modelId) throw new Error("Pinned Stenographer model is unavailable");
         return { state: "assessed", ...await requestManualJournalRecovery({
           ...input,
-          admitsFreshServiceInputs: admitsTransactionalServiceInputs,
+          admitsFreshServiceInputs: async (tx, dependencies, roomId) =>
+            (await classifyTransactionalJournalInputs(
+              tx,
+              dependencies,
+              roomId,
+            ))?.kind === "service",
         }) };
       },
       reflection: async input => {

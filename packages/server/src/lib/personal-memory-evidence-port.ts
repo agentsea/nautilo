@@ -21,12 +21,16 @@ import {
   reflectionRecords,
   type ReflectionSourceReader,
 } from "@nautilo/db";
+import type { OrganizerEvidenceBudget } from "@nautilo/reflection";
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import {
+  classifyPersonalMemoryEvidence,
+  PersonalMemoryEvidenceChangedError,
   stenographerJournalEventObservationFingerprint,
   stenographerJournalRollupObservationFingerprint,
   decodeDurableRecordEnvelope,
   type MemorySourceDerivation,
+  type PersonalMemoryEvidence,
   type PersonalMemoryEvidencePort,
   type RecordRepositorySelection,
 } from "@nautilo/reflection-bridge/server";
@@ -74,6 +78,60 @@ export interface PersonalMemoryEvidencePortOptions {
     ): Promise<Readonly<{ roomId: string }> | null>;
     getRoomWithAccess(roomId: string): Promise<CurrentRoomAccess | null>;
   }>;
+}
+
+function sameAuthorityLeaves(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return JSON.stringify([...left].sort())
+    === JSON.stringify([...right].sort());
+}
+
+/**
+ * Revalidate one Journal prompt through caller-supplied current readers. Every
+ * direct prompt dependency is opened before payer traversal, so an incomplete
+ * or budget-bounded service classification cannot conceal a changed source.
+ * The caller separately decides whether an exact accepted binding merely
+ * needs current evidence or a rewritten input must still classify `service`.
+ */
+export async function classifyCurrentJournalRecoveryInputs(input: Readonly<{
+  dependencies: readonly DurableModelExposureDependency[] | undefined;
+  ports: PersonalMemoryEvidencePort;
+  budget: OrganizerEvidenceBudget;
+  readRetiredJournalPredecessor?: PersonalMemoryEvidencePort["readRecord"];
+}>): Promise<PersonalMemoryEvidence | null> {
+  if (!input.dependencies?.length) return null;
+  try {
+    for (const dependency of input.dependencies) {
+      if (dependency.kind === "source") {
+        if (!dependency.observedRevision
+          || !dependency.observedContentFingerprint
+          || await input.ports.readSource(dependency) === null) return null;
+        continue;
+      }
+      const record = await input.ports.readRecord(dependency);
+      if (record === null
+        || record.lifecycle !== "current"
+        || record.processingGeneration
+          !== dependency.observedProcessingGeneration
+        || !sameAuthorityLeaves(
+          record.semantic.terminalAuthorityLeafHandles,
+          dependency.terminalAuthorityLeafHandles,
+        )) return null;
+    }
+    return await classifyPersonalMemoryEvidence({
+      dependencies: input.dependencies,
+      ports: input.ports,
+      budget: input.budget,
+      ...(input.readRetiredJournalPredecessor === undefined ? {} : {
+        readRetiredJournalPredecessor: input.readRetiredJournalPredecessor,
+      }),
+    });
+  } catch (error) {
+    if (error instanceof PersonalMemoryEvidenceChangedError) return null;
+    throw error;
+  }
 }
 
 type MemoryEvidenceRecordDependency = Extract<
