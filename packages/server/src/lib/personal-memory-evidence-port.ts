@@ -5,6 +5,8 @@ import {
   readModelInputExposure,
 } from "@nautilo/agent";
 import {
+  and,
+  eq,
   findReflectionEnabledHumanOwnersWith,
   findReflectionLegacyJournalEventSourceWith,
   findReflectionMemoryNamespaceIdsWith,
@@ -12,12 +14,18 @@ import {
   findReflectionMessageSourceWith,
   findReflectionProfileSoulSourceWith,
   findReflectionRollupSourceWith,
-  type DirectDatabase,
+  reflectionRecordPayloadRepresentationHeads,
+  reflectionRecordPayloadRepresentations,
+  reflectionRecordPublications,
+  reflectionRecordSuccessors,
+  reflectionRecords,
+  type ReflectionSourceReader,
 } from "@nautilo/db";
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import {
   stenographerJournalEventObservationFingerprint,
   stenographerJournalRollupObservationFingerprint,
+  decodeDurableRecordEnvelope,
   type MemorySourceDerivation,
   type PersonalMemoryEvidencePort,
   type RecordRepositorySelection,
@@ -52,7 +60,7 @@ type Audience = Readonly<{
 }>;
 
 export interface PersonalMemoryEvidencePortOptions {
-  readonly db: DirectDatabase;
+  readonly db: ReflectionSourceReader;
   readonly selected: () => RecordRepositorySelection;
   readonly fingerprints?: Pick<OrdinarySourceFingerprintPort, "memory">;
   readonly fingerprintProfileSoul: (input: ProfileSoulFingerprintInput) => string;
@@ -66,6 +74,127 @@ export interface PersonalMemoryEvidencePortOptions {
     ): Promise<Readonly<{ roomId: string }> | null>;
     getRoomWithAccess(roomId: string): Promise<CurrentRoomAccess | null>;
   }>;
+}
+
+type MemoryEvidenceRecordDependency = Extract<
+  DurableModelExposureDependency,
+  { kind: "record" }
+>;
+
+/**
+ * Open one current ordinary Record entirely through the supplied reader. This
+ * keeps a manual Journal dispatch proof on its already-held transaction rather
+ * than re-entering the shared pool through the long-lived Reflection runtime.
+ */
+export async function readCurrentOrdinaryMemoryEvidenceRecordWith(
+  db: ReflectionSourceReader,
+  dependency: MemoryEvidenceRecordDependency,
+) {
+  const rows = await db.select({
+    recordRef: reflectionRecords.recordId,
+    lifecycle: reflectionRecords.lifecycle,
+    structuralHeight: reflectionRecords.structuralHeight,
+    processingGeneration: reflectionRecords.processingGeneration,
+    producerPolicyVersion: reflectionRecords.producerPolicyVersion,
+    representationGeneration:
+      reflectionRecordPayloadRepresentationHeads.currentRepresentationGeneration,
+    payloadBytes:
+      reflectionRecordPayloadRepresentations.plaintextPayloadBytes,
+  }).from(reflectionRecords)
+    .innerJoin(reflectionRecordPayloadRepresentationHeads, and(
+      eq(
+        reflectionRecordPayloadRepresentationHeads.recordId,
+        reflectionRecords.recordId,
+      ),
+      eq(
+        reflectionRecordPayloadRepresentationHeads.representation,
+        "ordinary",
+      ),
+    ))
+    .innerJoin(reflectionRecordPayloadRepresentations, and(
+      eq(
+        reflectionRecordPayloadRepresentations.recordId,
+        reflectionRecordPayloadRepresentationHeads.recordId,
+      ),
+      eq(
+        reflectionRecordPayloadRepresentations.representation,
+        reflectionRecordPayloadRepresentationHeads.representation,
+      ),
+      eq(
+        reflectionRecordPayloadRepresentations.representationGeneration,
+        reflectionRecordPayloadRepresentationHeads.currentRepresentationGeneration,
+      ),
+    ))
+    .where(and(
+      eq(reflectionRecords.recordId, dependency.recordRef),
+      eq(reflectionRecords.disposition, "available"),
+    ))
+    .limit(2);
+  if (rows.length !== 1) return null;
+  const row = rows[0]!;
+  if (!(row.payloadBytes instanceof Uint8Array)) return null;
+  const publications = await db.select({
+    id: reflectionRecordPublications.publicationId,
+  }).from(reflectionRecordPublications).where(and(
+    eq(reflectionRecordPublications.recordId, dependency.recordRef),
+    eq(reflectionRecordPublications.representation, "ordinary"),
+    eq(
+      reflectionRecordPublications.representationGeneration,
+      row.representationGeneration,
+    ),
+    eq(reflectionRecordPublications.state, "complete"),
+  )).limit(2);
+  if (publications.length !== 1) return null;
+  try {
+    const record = decodeDurableRecordEnvelope({
+      recordRef: row.recordRef,
+      lifecycle: row.lifecycle,
+      structuralHeight: row.structuralHeight,
+      processingGeneration: row.processingGeneration,
+      payloadBytes: row.payloadBytes,
+    });
+    return record.semantic.producer.policyVersion === row.producerPolicyVersion
+      ? record
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Transaction-bound historical Journal ancestry reader. */
+export async function readRetiredJournalMemoryEvidenceRecordWith(
+  db: ReflectionSourceReader,
+  dependency: MemoryEvidenceRecordDependency,
+  roomId: string,
+) {
+  const record = await readCurrentOrdinaryMemoryEvidenceRecordWith(
+    db,
+    dependency,
+  );
+  if (record === null
+    || (record.lifecycle !== "superseded" && record.lifecycle !== "resolved")
+    || record.processingGeneration
+      !== dependency.observedProcessingGeneration + 1
+    || record.semantic.producer.producerRef !== "stenographer"
+    || !record.semantic.sourceOwnedKind?.startsWith("journal_event:")
+    || !record.semantic.anchors.some((anchor) =>
+      anchor.kind === "room"
+      && anchor.role === "origin"
+      && anchor.anchorRef === roomId
+    )) return null;
+  const successors = await db.select({
+    predecessorRecordRef: reflectionRecordSuccessors.predecessorRecordId,
+    relation: reflectionRecordSuccessors.relation,
+  }).from(reflectionRecordSuccessors).where(eq(
+    reflectionRecordSuccessors.predecessorRecordId,
+    dependency.recordRef,
+  )).limit(2);
+  return successors.length === 1
+    && successors[0]!.predecessorRecordRef === dependency.recordRef
+    && successors[0]!.relation
+      === (record.lifecycle === "superseded" ? "supersedes" : "resolves")
+    ? record
+    : null;
 }
 
 const MESSAGE_REF = /^message:([1-9][0-9]*)$/u;

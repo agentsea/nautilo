@@ -842,6 +842,26 @@ async function loadPromptJournal(
   };
 }
 
+/** Recovery-only fence for ordinary native event payload head replacement. */
+async function lockOrdinaryCompactionRepresentationHeads(
+  tx: JournalExecutor,
+  roomId: string,
+): Promise<void> {
+  await tx.select({
+    recordId: reflectionRecordPayloadRepresentationHeads.recordId,
+  }).from(reflectionRecordPayloadRepresentationHeads)
+    .innerJoin(roomEvents, and(
+      eq(roomEvents.recordId, reflectionRecordPayloadRepresentationHeads.recordId),
+      eq(roomEvents.projectionKind, "native"),
+    ))
+    .where(and(
+      eq(roomEvents.roomId, roomId),
+      eq(reflectionRecordPayloadRepresentationHeads.representation, "ordinary"),
+    ))
+    .orderBy(reflectionRecordPayloadRepresentationHeads.recordId)
+    .for("update", { of: reflectionRecordPayloadRepresentationHeads });
+}
+
 async function loadPriorContextRows(
   tx: JournalExecutor,
   input: {
@@ -1830,6 +1850,7 @@ export async function resolveCurrentOrdinaryCompactionCoordinates(
     return null;
   }
   try {
+    await lockOrdinaryCompactionRepresentationHeads(tx, roomId);
     const journal = await loadPromptJournal(tx, roomId, state.namespaceId);
     const events = await loadAllRoomEvents(tx, roomId, state.namespaceId);
     const planned = planJournalCompaction({
@@ -1851,11 +1872,21 @@ export async function resolveCurrentOrdinaryCompactionCoordinates(
   }
 }
 
-/** Recompute one stored ordinary plan from its exact current source under the caller's lock. */
-export async function isCurrentOrdinaryCompactionAcceptedPlan(
+/**
+ * Reconstruct the exact source behind the currently accepted ordinary plan.
+ * The caller holds the Room/state write fence when using this as a paid
+ * dispatch coordinate, so a source rewrite either precedes this read or waits
+ * until after the authorization has linearized.
+ */
+export async function resolveAcceptedOrdinaryCompactionCoordinates(
   tx: JournalExecutor,
   roomId: string,
-): Promise<boolean> {
+): Promise<Readonly<{
+  workId: string;
+  rebuildGeneration: number;
+  inputDigest: string;
+  dependencies: readonly DurableModelExposureDependency[] | undefined;
+}> | null> {
   const [state] = await tx.select({
     namespaceId: rooms.namespaceId,
     rebuildGeneration: roomJournalState.rebuildGeneration,
@@ -1865,15 +1896,19 @@ export async function isCurrentOrdinaryCompactionAcceptedPlan(
     .innerJoin(rooms, eq(rooms.id, roomJournalState.roomId))
     .where(eq(roomJournalState.roomId, roomId))
     .limit(1);
-  if (!state || state.rebuildRequestedAt !== null) return false;
-  let accepted: Extract<StenographerCompactionAcceptedPlan, { owner: "ordinary" }> | null;
+  if (!state || state.rebuildRequestedAt !== null) return null;
+  let accepted: Extract<
+    StenographerCompactionAcceptedPlan,
+    { owner: "ordinary" }
+  > | null;
   try {
     accepted = acceptedOrdinaryCompactionPlan(state.acceptedPlan);
   } catch {
-    return false;
+    return null;
   }
-  if (accepted === null) return false;
+  if (accepted === null) return null;
   try {
+    await lockOrdinaryCompactionRepresentationHeads(tx, roomId);
     const journal = await loadPromptJournal(tx, roomId, state.namespaceId);
     const events = await loadAllRoomEvents(tx, roomId, state.namespaceId);
     const planned = currentAcceptedOrdinaryCompactionPlan({
@@ -1882,11 +1917,42 @@ export async function isCurrentOrdinaryCompactionAcceptedPlan(
       latestRollup: journal.latestRollup,
       allEvents: events,
     });
-    return !!(planned?.ok && planned.plan);
+    if (!planned?.ok || !planned.plan) return null;
+    const workId = ordinaryCompactionOperationId(
+      roomId,
+      state.rebuildGeneration,
+      journal.latestRollup?.id ?? null,
+      planned.plan,
+    );
+    if (workId !== accepted.operationId) return null;
+    return {
+      workId,
+      rebuildGeneration: state.rebuildGeneration,
+      inputDigest: compactionInputDigest(
+        workId,
+        journal.latestRollup,
+        planned.plan,
+      ),
+      dependencies: compactionModelExposureDependencies({
+        plan: planned.plan,
+        previousRollup: journal.latestRollup,
+      }),
+    };
   } catch (error) {
-    if (error instanceof StenographerSourceRepresentationUnavailableError) return false;
+    if (error instanceof StenographerSourceRepresentationUnavailableError) {
+      return null;
+    }
     throw error;
   }
+}
+
+/** Recompute one stored ordinary plan from its exact current source under the caller's lock. */
+export async function isCurrentOrdinaryCompactionAcceptedPlan(
+  tx: JournalExecutor,
+  roomId: string,
+): Promise<boolean> {
+  return await resolveAcceptedOrdinaryCompactionCoordinates(tx, roomId)
+    !== null;
 }
 
 // Bind a replacement to the exact ordinary input, including changes inside

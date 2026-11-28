@@ -810,6 +810,11 @@ export { extractionModelExposureDependencies, compactionModelExposureDependencie
 export { createRoomSideModelInvoker } from "./stenographer/model-invoker";
 export type { AdmittedStenographerModel } from "./stenographer/ordinary-stenographer-data-operation";
 
-export type { ExtractionClaim, CompactionClaim } from "./stenographer/repository";
+export {
+  resolveAcceptedOrdinaryCompactionCoordinates,
+  resolveCurrentOrdinaryCompactionCoordinates,
+  type ExtractionClaim,
+  type CompactionClaim,
+} from "./stenographer/repository";
 
 export type { AdmitReflectionMemoryModelRequest, AdmittedReflectionMemoryModel } from "./reflection/production-reflection-memory";

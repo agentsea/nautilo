@@ -87,13 +87,15 @@ export const MIGRATION_TREE_BASELINE = {
 // source-change retirement, and retry scheduling; one lane-target checkpoint;
 // and two fresh-input authorization repairs. The focused inventory test pins
 // every exact locator and the four generated migration/snapshot pairs.
+// The final Journal dispatch check retires a stale compaction grant and can
+// remove an unspent extraction grant when its source disappears.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1709,
+  "count": 1711,
   "insert": 539,
-  "update": 959,
-  "delete": 193,
+  "update": 960,
+  "delete": 194,
   "unresolved": 18,
-  "sha256": "2115672b5c45ac63bec7df583c6b67a19b50504403772a3ca7e24948e009bd13"
+  "sha256": "4ded57bd88cd41430765e196230dfac152ecc0e3bf990001bfc30bef2778e18f"
 } as const;
 
 /**

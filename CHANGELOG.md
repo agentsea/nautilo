@@ -16,7 +16,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   an unconfirmed click in the same browser tab preserves its authorization.
   If Journal compaction inputs change before dispatch, the Memory screen shows
   the hold. A fresh click can authorize the current inputs when they qualify for
-  server funding.
+  server funding. Editing or deleting a source message also prevents an approved
+  Journal extraction from sending the old transcript to the provider.
 
 - Let Room Journal rebuilds continue after a rebuilt observation replaces
   an earlier one, so Reflection can retire work for the old Journal.

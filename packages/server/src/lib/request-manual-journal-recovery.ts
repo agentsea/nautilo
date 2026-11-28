@@ -26,7 +26,10 @@ import {
   type DirectDatabase,
 } from "@nautilo/db";
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
-import { resolveCurrentOrdinaryCompactionCoordinates } from "@nautilo/runtime";
+import {
+  resolveAcceptedOrdinaryCompactionCoordinates,
+  resolveCurrentOrdinaryCompactionCoordinates,
+} from "@nautilo/runtime";
 import { isUuidString } from "@nautilo/trust";
 import { parseMemoryOperationBinding } from "@nautilo/types";
 
@@ -36,7 +39,11 @@ export interface ManualJournalRecoveryInput {
   readonly observedThrough: Date;
   readonly authorizedBy: string;
   readonly modelId: string;
-  readonly admitsFreshServiceInputs?: (dependencies: readonly DurableModelExposureDependency[]) => Promise<boolean>;
+  readonly admitsFreshServiceInputs?: (
+    tx: Transaction,
+    dependencies: readonly DurableModelExposureDependency[],
+    roomId: string,
+  ) => Promise<boolean>;
   readonly page?: Readonly<{
     readonly after: string | null;
     readonly limit: number;
@@ -228,13 +235,13 @@ async function queueCandidate(
     if (extractionActive || compactionActive || conversionActive) return "progressing";
     let inputDigest: string | undefined;
     let dependencies: readonly DurableModelExposureDependency[] | undefined;
-    if (candidate.workKind === "compaction" && candidate.workId === "") {
-      const coordinates = await resolveCurrentOrdinaryCompactionCoordinates(
-        tx,
-        candidate.roomId,
-      );
+    if (candidate.workKind === "compaction") {
+      const coordinates = candidate.workId === ""
+        ? await resolveCurrentOrdinaryCompactionCoordinates(tx, candidate.roomId)
+        : await resolveAcceptedOrdinaryCompactionCoordinates(tx, candidate.roomId);
       if (coordinates === null
-        || coordinates.rebuildGeneration !== candidate.rebuildGeneration) {
+        || coordinates.rebuildGeneration !== candidate.rebuildGeneration
+        || (candidate.workId !== "" && coordinates.workId !== candidate.workId)) {
         return "held";
       }
       candidate = { ...candidate, workId: coordinates.workId };
@@ -414,7 +421,11 @@ async function queueCandidate(
         }, tx);
         if (replaySafety.decision === "block_unknown"
           || !dependencies?.length
-          || !await input.admitsFreshServiceInputs?.(dependencies)) return "held";
+          || !await input.admitsFreshServiceInputs?.(
+            tx,
+            dependencies,
+            candidate.roomId,
+          )) return "held";
         freshServiceInputs = true;
       }
     }

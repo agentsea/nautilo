@@ -49,6 +49,8 @@ const addedWriters = [
   "update|public.memory_review_model_recoveries|packages/server/src/lib/request-manual-review-recovery.ts#requestManualReviewRecovery:update:public.memory_review_model_recoveries:1",
   "update|public.memory_review_turns|packages/server/src/lib/request-manual-review-recovery.ts#requestManualReviewRecovery:update:public.memory_review_turns:1",
   "update|public.room_journal_model_recoveries|packages/server/src/lib/stenographer-memory-funding.ts#admit:update:public.room_journal_model_recoveries:1",
+  "update|public.room_journal_model_recoveries|packages/server/src/lib/stenographer-memory-funding.ts#admit:update:public.room_journal_model_recoveries:2",
+  "delete|public.room_journal_model_recoveries|packages/server/src/lib/stenographer-memory-funding.ts#admit:delete:public.room_journal_model_recoveries:1",
 ] as const;
 
 const removedWriters: readonly DatabaseWriterObservation[] = [

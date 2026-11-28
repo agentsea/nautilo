@@ -10,9 +10,12 @@ import { rooms } from "../schema/rooms";
 import { roomEventRollups, roomEvents } from "../schema/room-journal";
 import { sessionMessages, sessions } from "../schema/sessions";
 
+/** Read surface shared by a pool database and an already-held transaction. */
+export type ReflectionSourceReader = Pick<DirectDatabase, "select">;
+
 /** Read one exact Room owner while rejecting unexpected duplicate rows. */
 export async function findReflectionRoomOwnerIdWith(
-  db: DirectDatabase,
+  db: ReflectionSourceReader,
   roomId: string,
 ): Promise<string | null> {
   const rows = await db
@@ -25,7 +28,7 @@ export async function findReflectionRoomOwnerIdWith(
 
 /** Read one exact ordinary Memory only through its canonical Namespace edge. */
 export async function findReflectionMemorySourceWith(
-  db: DirectDatabase,
+  db: ReflectionSourceReader,
   memoryId: string,
   namespaceId: string,
 ) {
@@ -60,7 +63,7 @@ export const REFLECTION_MEMORY_NAMESPACE_PROOF_LIMIT = 256;
  * throw.
  */
 export async function findReflectionMemoryNamespaceIdsWith(
-  db: DirectDatabase,
+  db: ReflectionSourceReader,
   memoryId: string,
   selectedNamespaceId: string,
 ): Promise<readonly string[] | null> {
@@ -92,7 +95,7 @@ export async function findReflectionMemoryNamespaceIdsWith(
 
 /** Read one exact ordinary Message through its Room and Namespace anchors. */
 export async function findReflectionMessageSourceWith(
-  db: DirectDatabase,
+  db: ReflectionSourceReader,
   messageId: number,
   roomId: string,
   namespaceId: string,
@@ -127,7 +130,7 @@ export async function findReflectionMessageSourceWith(
 
 /** Resolve an exact effective Room audience from actor IDs to enabled Humans. */
 export async function findReflectionEnabledHumanOwnersWith(
-  db: DirectDatabase,
+  db: ReflectionSourceReader,
   actorIds: readonly string[],
 ): Promise<readonly string[] | null> {
   const exactActorIds = [...new Set(actorIds)].sort();
@@ -149,7 +152,7 @@ export async function findReflectionEnabledHumanOwnersWith(
 
 /** Read one canonical Profile Soul and its current Agent ownership mirror. */
 export async function findReflectionProfileSoulSourceWith(
-  db: DirectDatabase,
+  db: ReflectionSourceReader,
   agentId: string,
 ) {
   const rows = await db
@@ -176,7 +179,7 @@ export async function findReflectionProfileSoulSourceWith(
 
 /** Read one exact ordinary rollup through its Room and Namespace anchors. */
 export async function findReflectionRollupSourceWith(
-  db: DirectDatabase,
+  db: ReflectionSourceReader,
   rollupId: string,
   roomId: string,
   namespaceId: string,
@@ -204,7 +207,7 @@ export async function findReflectionRollupSourceWith(
 
 /** Legacy journal rows have exact coordinates but no retained author proof. */
 export async function findReflectionLegacyJournalEventSourceWith(
-  db: DirectDatabase,
+  db: ReflectionSourceReader,
   eventId: string,
   roomId: string,
   namespaceId: string,

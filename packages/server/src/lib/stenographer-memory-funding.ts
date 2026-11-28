@@ -1,9 +1,10 @@
-import { and, eq, gt, inArray, isNull, resolveModelAttemptReplaySafety, roomJournalBatches,
+import { acquireEncryptionConsumptionFence, acquireRoomWriteLock, and, eq, gt, inArray, isNull, resolveModelAttemptReplaySafety, roomJournalBatches,
   roomJournalModelRecoveries, roomJournalState,
   sessionMessages, sessions, users, type DirectDatabase,
   type StenographerCompactionAcceptedPlan } from "@nautilo/db";
 import { MemoryProviderOutcomeUnknownError } from "@nautilo/agent";
 import { createRoomSideModelInvoker, extractionModelExposureDependencies, compactionModelExposureDependencies,
+  resolveAcceptedOrdinaryCompactionCoordinates,
   StenographerInputAuthorityUnavailableError,
   type ExtractionClaim, type CompactionClaim, type AdmittedStenographerModel } from "@nautilo/runtime";
 import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
@@ -12,11 +13,17 @@ import { openMemoryOperation, type OpenMemoryOperationInput } from "./personal-m
 import { getCurrentProtectedMemoryEvidence } from "./protected-memory-model-evidence";
 
 type RecordDependency = Extract<DurableModelExposureDependency, { kind: "record" }>;
+type Transaction = Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
 
 type Common = Pick<OpenMemoryOperationInput, "ports" | "budget" | "commitmentKey"> & {
   db: DirectDatabase;
   resolveServiceModel(): string;
   assertAvailable(): Promise<void>;
+  admitsCurrentServiceInputs?: (
+    tx: Transaction,
+    dependencies: readonly DurableModelExposureDependency[],
+    roomId: string,
+  ) => Promise<boolean>;
   readRetiredJournalPredecessor?: (dependency: RecordDependency, roomId: string) => Promise<DurableRecordEnvelope | null>;
   /** Pure injection seam for funding-boundary tests. */
   createInvoker?: typeof createRoomSideModelInvoker;
@@ -277,37 +284,151 @@ export function createStenographerMemoryFunding(input: Common) {
     }
     let recoveryDispatch: Promise<void> | undefined;
     const beforeProviderDispatch = manualRecoveryId === undefined ? undefined : async (signal?: AbortSignal) => {
-      await admitted.assertCurrent();
       signal?.throwIfAborted();
-      recoveryDispatch ??= input.db.transaction(async tx => {
-        const [recovery] = await tx.select({
-          id: roomJournalModelRecoveries.id,
-        }).from(roomJournalModelRecoveries).where(and(
-          eq(roomJournalModelRecoveries.id, manualRecoveryId),
-          eq(roomJournalModelRecoveries.roomId, claim.roomId),
-          eq(roomJournalModelRecoveries.workKind, stage),
-          eq(roomJournalModelRecoveries.workId, operationKey),
-          eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
-          eq(roomJournalModelRecoveries.targetModelId, admitted.modelId),
-          isNull(roomJournalModelRecoveries.spentAt),
-          isNull(roomJournalModelRecoveries.sourceChangedAt),
-        )).limit(1).for("update", { of: roomJournalModelRecoveries });
-        if (!recovery) throw new Error("Manual Journal recovery authorization changed");
-        // The recovery row lock may have been held while cancellation arrived.
-        // Throwing here rolls the transaction back without consuming consent.
-        signal?.throwIfAborted();
-        const spent = await tx.update(roomJournalModelRecoveries).set({
-          spentAt: new Date(),
-        }).where(and(
-          eq(roomJournalModelRecoveries.id, manualRecoveryId),
-          isNull(roomJournalModelRecoveries.spentAt),
-          isNull(roomJournalModelRecoveries.sourceChangedAt),
-        )).returning({ id: roomJournalModelRecoveries.id });
-        if (spent.length !== 1) throw new Error("Manual Journal recovery authorization changed");
-        // Cancellation during the UPDATE still aborts this transaction before
-        // COMMIT; there is deliberately no cancellation check after COMMIT.
-        signal?.throwIfAborted();
-      });
+      recoveryDispatch ??= (async () => {
+        const outcome = await input.db.transaction(async tx => {
+          if ((await acquireEncryptionConsumptionFence(tx)).mode !== "plaintext_only") {
+            throw new Error("Manual Journal recovery data mode changed");
+          }
+          await acquireRoomWriteLock(tx, claim.roomId);
+          const [state] = await tx.select({
+            rebuildGeneration: roomJournalState.rebuildGeneration,
+            leaseToken: extraction
+              ? roomJournalState.leaseToken
+              : roomJournalState.compactionLeaseToken,
+            leaseExpiresAt: extraction
+              ? roomJournalState.leaseExpiresAt
+              : roomJournalState.compactionLeaseExpiresAt,
+            accepted: roomJournalState.compactionAcceptedModelBinding,
+            acceptedPlan: roomJournalState.compactionAcceptedPlan,
+          }).from(roomJournalState)
+            .where(eq(roomJournalState.roomId, claim.roomId))
+            .limit(1).for("update", { of: roomJournalState });
+          const now = new Date();
+          if (!state
+            || state.leaseToken !== claim.leaseToken
+            || state.leaseExpiresAt === null
+            || state.leaseExpiresAt <= now) {
+            throw new Error("Memory processing lease changed");
+          }
+          const [recovery] = await tx.select({
+            id: roomJournalModelRecoveries.id,
+            rebuildGeneration: roomJournalModelRecoveries.rebuildGeneration,
+            authorizedInputDigest: roomJournalModelRecoveries.authorizedInputDigest,
+            freshServiceInputs: roomJournalModelRecoveries.freshServiceInputs,
+          }).from(roomJournalModelRecoveries).where(and(
+            eq(roomJournalModelRecoveries.id, manualRecoveryId),
+            eq(roomJournalModelRecoveries.roomId, claim.roomId),
+            eq(roomJournalModelRecoveries.workKind, stage),
+            eq(roomJournalModelRecoveries.workId, operationKey),
+            eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
+            eq(roomJournalModelRecoveries.targetModelId, admitted.modelId),
+            isNull(roomJournalModelRecoveries.spentAt),
+            isNull(roomJournalModelRecoveries.sourceChangedAt),
+          )).limit(1).for("update", { of: roomJournalModelRecoveries });
+          if (!recovery
+            || recovery.rebuildGeneration !== state.rebuildGeneration) {
+            throw new Error("Manual Journal recovery authorization changed");
+          }
+          if (extraction) {
+            const [batch] = await tx.select({
+              accepted: roomJournalBatches.acceptedModelBinding,
+              status: roomJournalBatches.status,
+            }).from(roomJournalBatches).where(and(
+              eq(roomJournalBatches.id, operationKey),
+              eq(roomJournalBatches.roomId, claim.roomId),
+            )).limit(1).for("update", { of: roomJournalBatches });
+            if (!batch || batch.status !== "running") {
+              throw new Error("Memory extraction batch changed");
+            }
+            assertManualServiceBinding(
+              parseMemoryOperationBinding(batch.accepted),
+              admitted.modelId,
+            );
+            if (!expectedDependencies?.length
+              || await input.admitsCurrentServiceInputs?.(
+                tx,
+                expectedDependencies,
+                claim.roomId,
+              ) !== true) {
+              // Extraction grants cannot carry replacement digests. Remove
+              // this unspent, source-invalid consent so an expired worker
+              // cannot reclaim it against the old batch prompt.
+              await tx.delete(roomJournalModelRecoveries).where(and(
+                eq(roomJournalModelRecoveries.id, manualRecoveryId),
+                eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
+                isNull(roomJournalModelRecoveries.spentAt),
+                isNull(roomJournalModelRecoveries.sourceChangedAt),
+              ));
+              return "source_changed" as const;
+            }
+          } else {
+            if (!sameCompactionPlan(
+              state.acceptedPlan,
+              "acceptedPlan" in claim
+                ? claim.acceptedPlan
+                : (() => { throw new TypeError("Memory compaction plan is invalid"); })(),
+            )) throw new Error("Memory compaction acceptance changed");
+            assertManualServiceBinding(
+              parseMemoryOperationBinding(state.accepted),
+              admitted.modelId,
+            );
+            const coordinates = await resolveAcceptedOrdinaryCompactionCoordinates(
+              tx,
+              claim.roomId,
+            );
+            const currentDigest = coordinates?.inputDigest
+              ?? recovery.authorizedInputDigest;
+            const payerCurrent = !recovery.freshServiceInputs
+              || (coordinates?.dependencies?.length
+                && await input.admitsCurrentServiceInputs?.(
+                  tx,
+                  coordinates.dependencies,
+                  claim.roomId,
+                ) === true);
+            if (coordinates === null
+              || coordinates.workId !== operationKey
+              || coordinates.rebuildGeneration !== recovery.rebuildGeneration
+              || recovery.authorizedInputDigest === null
+              || coordinates.inputDigest !== recovery.authorizedInputDigest
+              || !payerCurrent) {
+              if (currentDigest !== null) {
+                await tx.update(roomJournalModelRecoveries).set({
+                  sourceChangedAt: now,
+                  replacementInputDigest: currentDigest,
+                }).where(and(
+                  eq(roomJournalModelRecoveries.id, manualRecoveryId),
+                  isNull(roomJournalModelRecoveries.spentAt),
+                  isNull(roomJournalModelRecoveries.sourceChangedAt),
+                ));
+              }
+              return "source_changed" as const;
+            }
+          }
+          // The recovery row lock may have been held while cancellation arrived.
+          // Throwing here rolls the transaction back without consuming consent.
+          signal?.throwIfAborted();
+          const spendAt = new Date();
+          if (state.leaseExpiresAt <= spendAt) {
+            throw new Error("Memory processing lease changed");
+          }
+          const spent = await tx.update(roomJournalModelRecoveries).set({
+            spentAt: spendAt,
+          }).where(and(
+            eq(roomJournalModelRecoveries.id, manualRecoveryId),
+            isNull(roomJournalModelRecoveries.spentAt),
+            isNull(roomJournalModelRecoveries.sourceChangedAt),
+          )).returning({ id: roomJournalModelRecoveries.id });
+          if (spent.length !== 1) throw new Error("Manual Journal recovery authorization changed");
+          // Cancellation during the UPDATE still aborts this transaction before
+          // COMMIT; there is deliberately no cancellation check after COMMIT.
+          signal?.throwIfAborted();
+          return "spent" as const;
+        }, { isolationLevel: "serializable" });
+        if (outcome === "source_changed") {
+          throw new StenographerInputAuthorityUnavailableError();
+        }
+      })();
       await recoveryDispatch;
     };
     const invoke = (input.createInvoker ?? createRoomSideModelInvoker)({ modelId: admitted.modelId,

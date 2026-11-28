@@ -420,6 +420,7 @@ export {
   resolveInviteLandingRoomInTx,
   // M044 — Room-derived Namespace access (REL-NSP-RMS, REL-HUM-NSP)
   getRoomWithAccess,
+  getRoomWithAccessWith,
   findAuthorizedRoomNameCandidates,
   type AuthorizedRoomNameCandidateRow,
   type FindAuthorizedRoomNameCandidatesInput,
@@ -434,6 +435,7 @@ export {
   findAgentOwnerPrivateRoom,
   // M173 — memory access API helpers
   findRoomByNamespaceId,
+  findRoomByNamespaceIdWith,
   findRoomsByNamespaceIds,
   resolveActorsDisplay,
   resolveActorsDisplayMap,

@@ -8,6 +8,7 @@ import {
   ensureDatabase,
   eq,
   inArray,
+  isNull,
   llmUsageEvents,
   namespaces,
   queryStenographerAdminStatus,
@@ -27,6 +28,10 @@ import {
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import type { DurableRecordEnvelope } from "@nautilo/reflection/durable";
+import {
+  deleteMessageHardInTx,
+  editCanonicalTranscriptMessageInTx,
+} from "@nautilo/trust";
 import {
   candidateRoomIds,
   compactionCandidateRooms,
@@ -154,6 +159,7 @@ async function fixture(label: string): Promise<Fixture> {
 function funding(
   createInvoker: () => (prompt: string) => Promise<string>,
   humanId: string,
+  afterOuterCheck?: () => Promise<void>,
 ) {
   return createStenographerMemoryFunding({
     db,
@@ -190,11 +196,34 @@ function funding(
     commitmentKey: new Uint8Array(32).fill(29),
     resolveServiceModel: () => MODEL,
     assertAvailable: () => Promise.resolve(),
+    admitsCurrentServiceInputs: async (tx, dependencies) => {
+      const messageIds = [...new Set(dependencies.flatMap((dependency) => {
+        if (dependency.kind !== "source"
+          || dependency.sourceKind !== "message") return [];
+        const match = /^message:(\d+)$/u.exec(dependency.logicalSourceRef);
+        if (match === null) return [];
+        const messageId = Number(match[1]);
+        return Number.isSafeInteger(messageId) && messageId > 0
+          ? [messageId]
+          : [];
+      }))];
+      if (messageIds.length === 0) return dependencies.length > 0;
+      const current = await tx.select({ id: sessionMessages.id })
+        .from(sessionMessages)
+        .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+        .innerJoin(users, eq(users.id, sessions.ownerId))
+        .where(and(
+          inArray(sessionMessages.id, messageIds),
+          isNull(users.disabledAt),
+        ));
+      return current.length === messageIds.length;
+    },
     createInvoker: options => {
       const invoke = createInvoker();
       return async (prompt, signal) => {
         signal?.throwIfAborted();
         await options.assertCurrent?.();
+        await afterOuterCheck?.();
         await options.beforeProviderDispatch?.();
         return invoke(prompt);
       };
@@ -294,6 +323,107 @@ async function addNativeCompactionEvents(
       createdAt: BASE,
     })));
   });
+}
+
+async function authorizeExtractionRecovery(
+  f: Fixture,
+): Promise<{ claim: ExtractionClaim; authorizedAt: Date }> {
+  const claimedAt = new Date(Date.now() - 20_000);
+  const original = await tryClaimRoom(db, f.roomId, claimedAt);
+  if (!original) throw new Error("expected original extraction claim");
+  await funding(() => async () => "unused", f.userId)
+    .admitExtractionModel(original, extractionModelExposureDependencies(original));
+  const failedAt = new Date(claimedAt.getTime() + 1_000);
+  await recordUnknownAttempt({
+    roomId: f.roomId,
+    callType: "room_stenographer",
+    operationId: original.batchId,
+    modelId: MODEL,
+    at: failedAt,
+  });
+  await failExtraction({
+    claim: original,
+    errorCode: "provider_outcome_unknown",
+    modelId: MODEL,
+    db,
+    now: failedAt,
+  });
+  const authorizedAt = new Date(failedAt.getTime() + 1_000);
+  const queued = await requestManualJournalRecovery({
+    db,
+    now: authorizedAt,
+    observedThrough: failedAt,
+    authorizedBy: f.userId,
+    modelId: RECOVERY_MODEL,
+  });
+  expect(queued.queued).toBeGreaterThanOrEqual(1);
+  expect(queued.held).toBe(0);
+  const claim = await tryClaimRoom(
+    db,
+    f.roomId,
+    new Date(authorizedAt.getTime() + 1_000),
+  );
+  if (!claim?.manualModelRecoveryId) {
+    throw new Error("expected manual extraction recovery claim");
+  }
+  return { claim, authorizedAt };
+}
+
+async function authorizeCompactionRecovery(
+  f: Fixture,
+): Promise<{ claim: CompactionClaim; authorizedAt: Date }> {
+  const [sourceBatch] = await db.insert(roomJournalBatches).values({
+    roomId: f.roomId,
+    fromMessageIdExclusive: 0,
+    throughMessageIdInclusive: f.messageId,
+    extractorVersion: TEST_EXTRACTOR_VERSION,
+    observationPublicationVersion: 2,
+    status: "completed",
+    attemptCount: 1,
+    operationCount: 0,
+    completedAt: BASE,
+    createdAt: BASE,
+  }).returning({ id: roomJournalBatches.id });
+  await addNativeCompactionEvents(f, sourceBatch!.id, 1, 80);
+  const claimedAt = new Date(Date.now() - 20_000);
+  await db.update(roomJournalState).set({ compactionDueAt: claimedAt })
+    .where(eq(roomJournalState.roomId, f.roomId));
+  const original = await tryClaimCompactionRoom(db, f.roomId, claimedAt);
+  if (!original) throw new Error("expected original compaction claim");
+  await funding(() => async () => "unused", f.userId)
+    .admitCompactionModel(original, compactionModelExposureDependencies(original));
+  const failedAt = new Date(claimedAt.getTime() + 1_000);
+  await recordUnknownAttempt({
+    roomId: f.roomId,
+    callType: "room_event_compaction",
+    operationId: original.modelOperationId,
+    modelId: MODEL,
+    at: failedAt,
+  });
+  await failCompaction({
+    claim: original,
+    errorCode: "provider_outcome_unknown",
+    modelId: MODEL,
+    db,
+    now: failedAt,
+  });
+  const authorizedAt = new Date(failedAt.getTime() + 1_000);
+  expect(await requestManualJournalRecovery({
+    db,
+    now: authorizedAt,
+    observedThrough: failedAt,
+    authorizedBy: f.userId,
+    modelId: RECOVERY_MODEL,
+  })).toEqual({ queued: 1, held: 0 });
+  const claim = await tryClaimCompactionRoom(
+    db,
+    f.roomId,
+    new Date(authorizedAt.getTime() + 1_000),
+  );
+  if (!claim?.manualModelRecoveryId) {
+    throw new Error("expected manual compaction recovery claim");
+  }
+  return { claim, authorizedAt };
 }
 
 describe("manual Journal recovery on PostgreSQL", () => {
@@ -401,6 +531,180 @@ describe("manual Journal recovery on PostgreSQL", () => {
       f.roomId,
     ))).toHaveLength(1);
   }, 30_000);
+
+  test.each(["edit", "delete"] as const)(
+    "fences a canonical source-message %s between the outer check and extraction grant spend",
+    async (mutation) => {
+      const f = await fixture(`dispatch-race-extraction-${mutation}`);
+      const { claim, authorizedAt } = await authorizeExtractionRecovery(f);
+      let calls = 0;
+      let mutated = false;
+      const admitted = await funding(
+        () => async () => (calls += 1, "[]"),
+        f.userId,
+        async () => {
+          if (mutated) return;
+          mutated = true;
+          await db.transaction(async (tx) => {
+            if (mutation === "edit") {
+              const edited = await editCanonicalTranscriptMessageInTx(tx, {
+                messageId: f.messageId,
+                expectedRevision: 0,
+                content: "Synthetic Journal evidence edited after approval",
+                clearCryptoObjectId: true,
+                editedAt: new Date(authorizedAt.getTime() + 2_000),
+              });
+              expect(edited).not.toBeNull();
+              return;
+            }
+            await deleteMessageHardInTx(tx, f.messageId);
+          });
+        },
+      ).admitExtractionModel(
+        claim,
+        extractionModelExposureDependencies(claim),
+      );
+
+      const rejected = await admitted.invoke("synthetic extraction prompt")
+        .then(() => undefined, (error: unknown) => error);
+      expect(rejected).toBeInstanceOf(Error);
+      expect(calls).toBe(0);
+      const [retired] = await db.select({
+        spentAt: roomJournalModelRecoveries.spentAt,
+      }).from(roomJournalModelRecoveries).where(eq(
+        roomJournalModelRecoveries.id,
+        claim.manualModelRecoveryId!,
+      ));
+      if (mutation === "delete") {
+        expect(retired).toBeUndefined();
+      } else {
+        expect(retired?.spentAt).toBeNull();
+      }
+
+      const repeated = await admitted.invoke("synthetic extraction prompt")
+        .then(() => undefined, (error: unknown) => error);
+      expect(repeated).toBeInstanceOf(Error);
+      expect(calls).toBe(0);
+      expect(await tryClaimRoom(
+        db,
+        f.roomId,
+        new Date(authorizedAt.getTime() + 180_000),
+      )).toBeNull();
+      await db.delete(roomJournalModelRecoveries).where(eq(
+        roomJournalModelRecoveries.roomId,
+        f.roomId,
+      ));
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`
+          SELECT set_config('nautilo.stenographer_writer_version', '2', true)
+        `);
+        await tx.update(roomJournalBatches).set({
+          status: "completed",
+          observationPublicationVersion: 2,
+          errorCode: null,
+          lastErrorAt: null,
+          lastErrorAttempt: null,
+          lastErrorModelId: null,
+        }).where(eq(roomJournalBatches.roomId, f.roomId));
+      });
+      await db.update(roomJournalState).set({
+        extractionFailureCount: 0,
+        lastExtractionErrorCode: null,
+        lastExtractionErrorAt: null,
+      }).where(eq(roomJournalState.roomId, f.roomId));
+    },
+    30_000,
+  );
+
+  test.each(["unchanged", "same-window representation rewrite"] as const)(
+    "%s compaction input is checked atomically with recovery grant spend",
+    async (scenario) => {
+      const f = await fixture(`dispatch-race-compaction-${scenario}`);
+      const { claim, authorizedAt } = await authorizeCompactionRecovery(f);
+      let calls = 0;
+      let mutated = false;
+      const admitted = await funding(
+        () => async () => (calls += 1, "compaction result"),
+        f.userId,
+        async () => {
+          if (mutated || scenario === "unchanged") return;
+          mutated = true;
+          await db.transaction(async (tx) => {
+            const recordId = f.recordIds[0]!;
+            await tx.insert(reflectionRecordPayloadRepresentations).values({
+              recordId,
+              representation: "ordinary",
+              representationGeneration: 2,
+              payloadVersion: 1,
+              plaintextPayloadBytes: new TextEncoder().encode(JSON.stringify({
+                statement: `Rewritten same-window compaction fact. ${"x".repeat(520)}`,
+              })),
+              createdAt: new Date(authorizedAt.getTime() + 2_000),
+            });
+            await tx.update(reflectionRecordPayloadRepresentationHeads).set({
+              currentRepresentationGeneration: 2,
+              updatedAt: new Date(authorizedAt.getTime() + 2_000),
+            }).where(and(
+              eq(reflectionRecordPayloadRepresentationHeads.recordId, recordId),
+              eq(reflectionRecordPayloadRepresentationHeads.representation, "ordinary"),
+            ));
+          });
+          const [head] = await db.select({
+            generation: reflectionRecordPayloadRepresentationHeads.currentRepresentationGeneration,
+          }).from(reflectionRecordPayloadRepresentationHeads).where(and(
+            eq(reflectionRecordPayloadRepresentationHeads.recordId, f.recordIds[0]!),
+            eq(reflectionRecordPayloadRepresentationHeads.representation, "ordinary"),
+          ));
+          expect(head?.generation).toBe(2);
+        },
+      ).admitCompactionModel(
+        claim,
+        compactionModelExposureDependencies(claim),
+      );
+
+      const outcome = await admitted.invoke("synthetic compaction prompt")
+        .then(() => undefined, (error: unknown) => error);
+      const [grant] = await db.select({
+        spentAt: roomJournalModelRecoveries.spentAt,
+        sourceChangedAt: roomJournalModelRecoveries.sourceChangedAt,
+      }).from(roomJournalModelRecoveries).where(eq(
+        roomJournalModelRecoveries.id,
+        claim.manualModelRecoveryId!,
+      ));
+      if (scenario === "unchanged") {
+        expect(outcome).toBeUndefined();
+        expect(calls).toBe(1);
+        expect(grant?.spentAt).not.toBeNull();
+        expect(grant?.sourceChangedAt).toBeNull();
+        return;
+      }
+      expect(outcome).toBeInstanceOf(Error);
+      expect(calls).toBe(0);
+      expect(grant?.spentAt).toBeNull();
+      expect(grant?.sourceChangedAt).not.toBeNull();
+      const repeated = await admitted.invoke("synthetic compaction prompt")
+        .then(() => undefined, (error: unknown) => error);
+      expect(repeated).toBeInstanceOf(Error);
+      expect(calls).toBe(0);
+      expect(await tryClaimCompactionRoom(
+        db,
+        f.roomId,
+        new Date(authorizedAt.getTime() + 180_000),
+      )).toBeNull();
+      await db.delete(roomJournalModelRecoveries).where(eq(
+        roomJournalModelRecoveries.roomId,
+        f.roomId,
+      ));
+      await db.update(roomJournalState).set({
+        compactionFailureCount: 0,
+        lastCompactionErrorCode: null,
+        lastCompactionErrorAt: null,
+        lastCompactionErrorAttempt: null,
+        lastCompactionErrorModelId: null,
+      }).where(eq(roomJournalState.roomId, f.roomId));
+    },
+    30_000,
+  );
 
   test.each([["live", "crash"], ["historical", "crash"], ["live", "admission failure"], ["historical", "admission failure"]] as const)(
     "reclaims an exact unspent %s extraction after %s before first model dispatch",
@@ -1066,7 +1370,7 @@ describe("manual Journal recovery on PostgreSQL", () => {
     const next = new Date(claimAt.getTime() + 1);
     const clicked = {
       db, now: next, observedThrough: next, authorizedBy: f.userId, modelId: "venice:new-target",
-      admitsFreshServiceInputs: async (dependencies: readonly unknown[]) => dependencies.length > 0,
+      admitsFreshServiceInputs: async (_tx: unknown, dependencies: readonly unknown[]) => dependencies.length > 0,
     };
     expect(await requestManualJournalRecovery({ ...clicked, observedThrough: failedAt })).toEqual({ queued: 0, held: 1 });
     expect(await requestManualJournalRecovery({ ...clicked, admitsFreshServiceInputs: async () => false }))
