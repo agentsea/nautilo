@@ -1,6 +1,8 @@
 /**
- * M100 Phase 3 — thin wrapper around `bin/nautilo-server --daemon` (PID +
- * logs + health wait). Does not fork a third daemon implementation.
+ * M100 Phase 3 — thin wrapper that starts `bin/nautilo-server` as a detached
+ * process (PID + logs + health wait). It starts the server itself instead of
+ * going through the server's `--daemon` launcher, so it holds the server's
+ * PID from the moment the process exists.
  */
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -30,7 +32,15 @@ import { ensureOfficeCliProvisioned } from "../lib/officecli-preflight";
 import { ensureServerAgentBrowserProvisioned } from "../lib/agent-browser-preflight";
 
 const HEALTH_POLL_MS = 250;
-const HEALTH_WAIT_MS = 90_000;
+/**
+ * Ceiling for a server process that stays alive without binding its HTTP
+ * listener. A server that exits during boot fails at once (see
+ * runServerStart), so this bound only applies to a slow or hung boot. A cold
+ * first boot builds every first-party app bundle before listening; on a
+ * Windows 11 host that alone took ~57 s and the listener bound after the
+ * former 90 s ceiling had expired, while a warm restart took ~15 s.
+ */
+export const HEALTH_WAIT_MS = 180_000;
 const HEALTH_PROBE_TIMEOUT_MS = 2_000;
 
 const SERVER_ENTRY = resolve(import.meta.dirname, "../../../nautilo-server/src/index.ts");
@@ -208,6 +218,37 @@ export function buildServerDaemonEnv(params: {
   return serverDaemonEnv(params.inst, params.instanceId, clone);
 }
 
+/**
+ * Start the server as a detached process and return its PID. The PID is
+ * known as soon as the process exists, so no stretch of the boot is left in
+ * which a server runs that this command cannot stop.
+ *
+ * This is what `nautilo-server --daemon` does for its own child: the same
+ * arguments without the flag, no stdio, and the marker that tells the server
+ * it already is the daemon. The server writes its own log file.
+ */
+export function spawnDetachedServer(params: {
+  entry: string;
+  args: readonly string[];
+  env: NodeJS.ProcessEnv;
+  cwd?: string;
+}): number {
+  const child = spawn(process.execPath, [params.entry, ...params.args], {
+    cwd: params.cwd ?? process.cwd(),
+    stdio: "ignore",
+    detached: true,
+    env: { ...params.env, NAUTILO_DAEMON_CHILD: "1" },
+  });
+  // A failed spawn reports through this event as well; without a listener it
+  // would end this process instead of the error below.
+  child.once("error", () => {});
+  child.unref();
+  if (child.pid === undefined) {
+    throw new Error("the server process could not be started");
+  }
+  return child.pid;
+}
+
 function parsePidFromFileContent(raw: string): number | null {
   const n = Number.parseInt(raw.trim(), 10);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -240,7 +281,7 @@ export async function fetchServerHealth(
     // A per-request deadline is required in addition to runServerStart's
     // overall deadline: an accepted TCP connection that never answers HTTP
     // would otherwise keep fetchHealth pending forever and prevent the outer
-    // loop from observing its 90-second deadline.
+    // loop from observing its HEALTH_WAIT_MS deadline.
     const res = await fetchImpl(healthUrl, ({
       signal: AbortSignal.timeout(timeoutMs),
       // Bun-specific: self-signed cert OK on the loopback probe; same
@@ -271,7 +312,13 @@ export interface ServerStartDeps {
   writePidFile: (pid: number) => void;
   removePidFile: () => void;
   isProcessAlive: (pid: number) => boolean;
-  spawnDaemon: () => void;
+  /**
+   * Start the detached server and return its PID (nothing returned:
+   * unknown); throws when no process could be started. With the PID a server
+   * that dies during boot fails fast and one that never becomes ready is
+   * stopped.
+   */
+  spawnDaemon: () => number | void;
   fetchHealth: () => Promise<{ ok: boolean; status?: string }>;
   /**
    * Returns the PID listening on the configured port, or null. Used to
@@ -374,7 +421,18 @@ export async function runServerStart(deps: ServerStartDeps): Promise<number> {
     deps.warn("[server:start] server browser provisioning failed; refusing to start an incomplete runtime");
     return 1;
   }
-  deps.spawnDaemon();
+  // The server writes server.pid only after its HTTP listener is bound, so
+  // the PID of the process started here is the only handle on a server that
+  // is still booting.
+  let serverPid: number | null;
+  try {
+    serverPid = deps.spawnDaemon() ?? null;
+  } catch (err) {
+    deps.warn(
+      `[server:start] ${err instanceof Error ? err.message : String(err)}; no server was started`,
+    );
+    return 1;
+  }
 
   const deadline = deps.now() + HEALTH_WAIT_MS;
   while (deps.now() < deadline) {
@@ -387,10 +445,16 @@ export async function runServerStart(deps: ServerStartDeps): Promise<number> {
       deps.log(`  log : ${paths.logPath}`);
       return 0;
     }
+    if (serverPid !== null && !deps.isProcessAlive(serverPid)) {
+      deps.warn(
+        `[server:start] server process ${serverPid} exited before ${healthUrl} became ready (see ${paths.logPath})`,
+      );
+      return 1;
+    }
     await deps.sleep(HEALTH_POLL_MS);
   }
 
-  const pidToKill = deps.readPidFile();
+  const pidToKill = deps.readPidFile() ?? serverPid;
   if (pidToKill !== null && deps.isProcessAlive(pidToKill)) {
     try {
       deps.killPid(pidToKill, "SIGTERM");
@@ -558,17 +622,11 @@ export async function serverStart(options: ServerStartOptions = {}): Promise<num
       warn: (s) => { console.warn(s); },
     }),
     spawnDaemon: () => {
-      const args = [SERVER_ENTRY, "--daemon"];
-      if (instanceId !== "") {
-        args.push("--instance", instanceId);
-      }
-      const child = spawn(process.execPath, args, {
-        cwd: process.cwd(),
-        stdio: "ignore",
-        detached: true,
+      return spawnDetachedServer({
+        entry: SERVER_ENTRY,
+        args: instanceId !== "" ? ["--instance", instanceId] : [],
         env: daemonEnv,
       });
-      child.unref();
     },
     fetchHealth: () => fetchServerHealth(healthUrl),
     log: (s) => {

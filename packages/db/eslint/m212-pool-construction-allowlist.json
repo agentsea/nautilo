@@ -69,6 +69,10 @@
       "reason": "Operator diagnostic CLI; constructs disposable postgres-js pools to verify M210 shutdown registry behavior."
     },
     {
+      "path": "bin/nautilo-dev/src/lib/runtime-acceptance-pg-probe.ts",
+      "reason": "Local runtime-acceptance gate; one max:1 postgres-js connection per role probe, closed after a SELECT, so acceptance needs no host psql or shell."
+    },
+    {
       "path": "bin/nautilo-dev/src/commands/mcp.ts",
       "reason": "Operator/dev CLI; short-lived createDirectDb(1) handles for MCP doctor subcommands."
     },

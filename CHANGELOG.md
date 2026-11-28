@@ -297,6 +297,18 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   paperclip and file drop also accept Word, Excel and PowerPoint as Workspace
   documents, with the same Room access checks as PDF attachments.
 
+- `bun run dev-stack` reaches its ready state on Windows without a host
+  PostgreSQL client or POSIX shell: runtime acceptance authenticates each
+  database role in-process on the instance's published port, with the same
+  credentialed and fail-closed checks.
+- `server-start` waits for a slow first boot while the server process is
+  alive, fails at once if it exits, and no longer leaves a booting server
+  running after a timeout: it starts the server process itself and holds its
+  PID from the start.
+- On Windows, private file operations name the required PowerShell 7 location
+  when `pwsh.exe` is not there, instead of failing with only "Private
+  filesystem operation failed". A Microsoft Store installation is not at that
+  location.
 - Windows x64 source builds produce a Desktop installer with bundled Bun and
   the private Relay Host for connecting to a Nautilo server.
   ACP-backed local agents remain unavailable on Windows until process-tree

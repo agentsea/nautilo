@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { __resetResolvedInstanceForTests } from "@nautilo/config";
+import { createServer, type AddressInfo, type Socket } from "node:net";
+import { __resetResolvedInstanceForTests, resolveInstance } from "@nautilo/config";
 import {
   buildAuthoritativeTargets,
   buildAuthoritativeExecEnv,
@@ -11,6 +12,11 @@ import {
   verify,
   type VerifyReport,
 } from "../../src/lib/verify";
+import {
+  buildLocalPostgresProbeSpecs,
+  localPostgresProbeConnect,
+  runLocalPostgresProbe,
+} from "../../src/lib/runtime-acceptance-pg-probe";
 import {
   authoritativeVerifyFailureIds,
   parseAuthoritativeVerifyFailureId,
@@ -37,7 +43,6 @@ function fakeResponse(ok: boolean, status: number, body: string): {
 
 function fakeTransport(over: {
   fetch?: RuntimeAcceptanceTransport["fetch"];
-  execSh?: RuntimeAcceptanceTransport["execSh"];
   pollHealth?: RuntimeAcceptanceTransport["pollHealth"];
 } = {}): RuntimeAcceptanceTransport {
   return {
@@ -51,9 +56,26 @@ function fakeTransport(over: {
           return Promise.resolve(fakeResponse(true, 200, JSON.stringify({ issuer: "http://logto" })));
         return Promise.resolve(fakeResponse(true, 200, "<html>spa</html>"));
       }),
-    execSh: over.execSh ?? (() => Promise.resolve({ code: 0, stderr: "" })),
     pollHealth: over.pollHealth ?? (() => Promise.resolve()),
   };
+}
+
+/** Real local targets with fake credentials and a fake PostgreSQL driver. */
+function fakeTargets(onQuery: (user: string) => void = () => {}) {
+  return buildAuthoritativeTargets({
+    execEnv: () => ({
+      NAUTILO_DB_PASSWORD: "pw-full",
+      NAUTILO_AGENT_DB_PASSWORD: "pw-agent",
+      NAUTILO_CRYPTO_DB_PASSWORD: "pw-crypto",
+    }),
+    connect: (options) => ({
+      query: () => {
+        onQuery(options.user);
+        return Promise.resolve([{ ok: 1 }]);
+      },
+      close: () => Promise.resolve(),
+    }),
+  });
 }
 
 describe("authoritative verify secret-free failure IDs", () => {
@@ -109,27 +131,160 @@ describe("D427 dev:verify — buildAuthoritativeTargets", () => {
     __resetResolvedInstanceForTests();
   });
 
-  test("app-role probes use the published port rather than stale container env", () => {
-    const t = buildAuthoritativeTargets();
-    expect(t.appRoleProbes).toHaveLength(3);
-    const nautilo = t.appRoleProbes.find((p) => p.role === "nautilo");
-    const agent = t.appRoleProbes.find((p) => p.role === "nautilo_agent");
-    const crypto = t.appRoleProbes.find((p) => p.role === "nautilo_crypto");
-    expect(nautilo).toBeDefined();
-    expect(agent).toBeDefined();
-    expect(crypto).toBeDefined();
-    expect(nautilo!.cmd).toContain("psql -h 127.0.0.1 -p ");
-    expect(nautilo!.cmd).toContain("-U nautilo ");
-    expect(nautilo!.cmd).toContain("-d nautilo");
-    expect(nautilo!.cmd).toContain("SELECT 1");
-    expect(nautilo!.cmd).toContain("NAUTILO_DB_PASSWORD");
-    expect(agent!.cmd).toContain("-U nautilo_agent ");
-    expect(agent!.cmd).toContain("NAUTILO_AGENT_DB_PASSWORD");
-    expect(crypto!.cmd).toContain("-U nautilo_crypto ");
-    expect(crypto!.cmd).toContain("NAUTILO_CRYPTO_DB_PASSWORD");
-    expect(nautilo!.cmd).not.toContain("docker exec");
-    expect(agent!.cmd).not.toContain("docker exec");
+  test("app-role probes authenticate each role on the published port without a host shell or psql", async () => {
+    const connections: Array<Record<string, unknown>> = [];
+    const queries: Array<{ text: string; params: readonly number[] }> = [];
+    const t = buildAuthoritativeTargets({
+      execEnv: () => ({
+        NAUTILO_DB_PASSWORD: "pw-full",
+        NAUTILO_AGENT_DB_PASSWORD: "pw-agent",
+        NAUTILO_CRYPTO_DB_PASSWORD: "pw-crypto",
+      }),
+      connect: (options) => {
+        connections.push({ ...options });
+        return {
+          query: (text, params) => {
+            queries.push({ text, params });
+            return Promise.resolve([{ ok: 1 }]);
+          },
+          close: () => Promise.resolve(),
+        };
+      },
+    });
+    expect(t.appRoleProbes.map((p) => p.role)).toEqual(["nautilo", "nautilo_agent", "nautilo_crypto"]);
+    expect(t.appRoleProbes.every((p) => !("cmd" in p))).toBe(true);
+    for (const probe of t.appRoleProbes) {
+      expect(await probe.run()).toEqual({ code: 0, stderr: "" });
+    }
+    const port = resolveInstance().db.postgresHostPort;
+    expect(connections).toEqual([
+      { host: "127.0.0.1", port, user: "nautilo", password: "pw-full", database: "nautilo" },
+      { host: "127.0.0.1", port, user: "nautilo_agent", password: "pw-agent", database: "nautilo" },
+      { host: "127.0.0.1", port, user: "nautilo_crypto", password: "pw-crypto", database: "nautilo" },
+    ]);
+    expect(queries.every((q) => q.text === "SELECT 1 AS ok" && q.params.length === 0)).toBe(true);
   });
+
+  test("probe specs cover all three runtime roles plus the parameterized agent wire probe", () => {
+    const specs = buildLocalPostgresProbeSpecs(15432);
+    expect(specs.appRoles).toEqual([
+      { host: "127.0.0.1", port: 15432, database: "nautilo", role: "nautilo", passwordEnv: "NAUTILO_DB_PASSWORD", query: "select-1" },
+      { host: "127.0.0.1", port: 15432, database: "nautilo", role: "nautilo_agent", passwordEnv: "NAUTILO_AGENT_DB_PASSWORD", query: "select-1" },
+      { host: "127.0.0.1", port: 15432, database: "nautilo", role: "nautilo_crypto", passwordEnv: "NAUTILO_CRYPTO_DB_PASSWORD", query: "select-1" },
+    ]);
+    expect(specs.direct).toEqual({
+      host: "127.0.0.1",
+      port: 15432,
+      database: "nautilo",
+      role: "nautilo_agent",
+      passwordEnv: "NAUTILO_AGENT_DB_PASSWORD",
+      query: "parameterized",
+    });
+  });
+
+  test("a missing role password fails the probe without connecting", async () => {
+    let connected = false;
+    const result = await runLocalPostgresProbe(
+      buildLocalPostgresProbeSpecs(15432).appRoles[2]!,
+      { NAUTILO_DB_PASSWORD: "pw-full" },
+      () => {
+        connected = true;
+        throw new Error("must not connect");
+      },
+    );
+    expect(result).toEqual({ code: 1, stderr: "NAUTILO_CRYPTO_DB_PASSWORD is not set" });
+    expect(connected).toBe(false);
+  });
+
+  test("driver failures fail closed with the password redacted and the client closed", async () => {
+    let closed = 0;
+    const result = await runLocalPostgresProbe(
+      buildLocalPostgresProbeSpecs(15432).appRoles[0]!,
+      { NAUTILO_DB_PASSWORD: "s3cret-pw" },
+      () => ({
+        query: () => Promise.reject(new Error('password authentication failed for user "nautilo" (tried s3cret-pw)')),
+        close: () => {
+          closed += 1;
+          return Promise.resolve();
+        },
+      }),
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('password authentication failed for user "nautilo"');
+    expect(result.stderr).not.toContain("s3cret-pw");
+    expect(closed).toBe(1);
+  });
+
+  test("an unexpected probe row fails closed", async () => {
+    const result = await runLocalPostgresProbe(
+      buildLocalPostgresProbeSpecs(15432).direct,
+      { NAUTILO_AGENT_DB_PASSWORD: "pw-agent" },
+      () => ({
+        query: () => Promise.resolve([{ ok: 2 }]),
+        close: () => Promise.resolve(),
+      }),
+    );
+    expect(result.code).toBe(1);
+  });
+
+  test("real sockets: a server that never closes its side cannot hold up probe cleanup", async () => {
+    // Speaks just enough of the PostgreSQL wire protocol to accept the
+    // session and answer every query with zero rows, and keeps its half of
+    // the socket open after the client hangs up. The driver's close waits
+    // for the socket to close, so only the cleanup bound lets the probe
+    // return.
+    const message = (type: string, body: Buffer = Buffer.alloc(0)): Buffer => {
+      const length = Buffer.alloc(4);
+      length.writeInt32BE(body.length + 4);
+      return Buffer.concat([Buffer.from(type), length, body]);
+    };
+    const readyForQuery = message("Z", Buffer.from("I"));
+    const commandComplete = message("C", Buffer.from("SELECT 0\0"));
+    const replies: Record<string, Buffer> = {
+      P: message("1"), // Parse -> ParseComplete
+      D: Buffer.concat([message("t", Buffer.alloc(2)), message("n")]), // Describe -> no parameters, NoData
+      B: message("2"), // Bind -> BindComplete
+      E: commandComplete, // Execute
+      S: readyForQuery, // Sync
+      Q: Buffer.concat([commandComplete, readyForQuery]), // simple Query
+    };
+    const sockets: Socket[] = [];
+    const server = createServer({ allowHalfOpen: true }, (socket) => {
+      sockets.push(socket);
+      let started = false;
+      let pending = Buffer.alloc(0);
+      socket.on("error", () => {});
+      socket.on("data", (chunk) => {
+        if (!started) {
+          // The startup message; AuthenticationOk needs no password exchange.
+          started = true;
+          socket.write(Buffer.concat([message("R", Buffer.alloc(4)), readyForQuery]));
+          return;
+        }
+        pending = Buffer.concat([pending, chunk]);
+        while (pending.length >= 5 && pending.length >= 1 + pending.readInt32BE(1)) {
+          const reply = replies[String.fromCharCode(pending[0]!)];
+          if (reply) socket.write(reply);
+          pending = pending.subarray(1 + pending.readInt32BE(1));
+        }
+      });
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const startedAt = Date.now();
+      const result = await runLocalPostgresProbe(
+        buildLocalPostgresProbeSpecs(port).direct,
+        { NAUTILO_AGENT_DB_PASSWORD: "pw-agent" },
+        localPostgresProbeConnect(0.2),
+      );
+      expect(result).toEqual({ code: 1, stderr: `unexpected probe result from 127.0.0.1:${port}` });
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    }
+  }, 30_000);
 
   test("probe transport selects canonical file credentials over ambient drift", () => {
     const root = mkdtempSync(join(tmpdir(), "nautilo-verify-env-"));
@@ -159,14 +314,26 @@ describe("D427 dev:verify — buildAuthoritativeTargets", () => {
     expect(env["LOGTO_DB_PASSWORD"]).toBe("selected-logto");
   });
 
-  test("direct postgres probe targets the published postgres port with a parameterized query", () => {
-    const t = buildAuthoritativeTargets();
-    expect(t.directPostgresProbe.cmd).toContain("psql -h 127.0.0.1 -p ");
-    expect(t.directPostgresProbe.cmd).toContain("nautilo_agent");
-    expect(t.directPostgresProbe.cmd).toContain("NAUTILO_AGENT_DB_PASSWORD");
-    expect(t.directPostgresProbe.cmd).toContain("PREPARE m215_verify_probe");
-    expect(t.directPostgresProbe.cmd).not.toContain("/sql");
-    expect(t.directPostgresProbe.cmd).not.toContain("Neon-Connection-String");
+  test("direct postgres probe targets the published postgres port with a bound parameter", async () => {
+    const seen: Array<{ user: string; port: number; text: string; params: readonly number[] }> = [];
+    const t = buildAuthoritativeTargets({
+      execEnv: () => ({ NAUTILO_AGENT_DB_PASSWORD: "pw-agent" }),
+      connect: (options) => ({
+        query: (text, params) => {
+          seen.push({ user: options.user, port: options.port, text, params });
+          return Promise.resolve([{ ok: 1 }]);
+        },
+        close: () => Promise.resolve(),
+      }),
+    });
+    expect(t.directPostgresProbe.label).toBe("nautilo_agent direct PostgreSQL probe");
+    expect(await t.directPostgresProbe.run()).toEqual({ code: 0, stderr: "" });
+    expect(seen).toEqual([{
+      user: "nautilo_agent",
+      port: resolveInstance().db.postgresHostPort,
+      text: "SELECT $1::int AS ok",
+      params: [1],
+    }]);
   });
 
   test("oidc + spa + server URLs resolve from the local instance", () => {
@@ -193,7 +360,7 @@ describe("D427 dev:verify — runAuthoritativeAcceptance (report mapping)", () =
   });
 
   test("happy path → mode authoritative, allPassed true, eight checks", async () => {
-    const report = await runAuthoritativeAcceptance(fakeTransport());
+    const report = await runAuthoritativeAcceptance(fakeTransport(), fakeTargets());
     expect(report.mode).toBe("authoritative");
     expect(report.allPassed).toBe(true);
     // health + identity + spa + three app-cluster roles + direct postgres + oidc
@@ -203,11 +370,9 @@ describe("D427 dev:verify — runAuthoritativeAcceptance (report mapping)", () =
 
   test("a failing check makes allPassed false (fail-closed, no nonFatal in authoritative mode)", async () => {
     const report = await runAuthoritativeAcceptance(
-      fakeTransport({
-        execSh: (cmd) =>
-          cmd.includes("-U nautilo ")
-            ? Promise.resolve({ code: 1, stderr: "password authentication failed for user nautilo" })
-            : Promise.resolve({ code: 0, stderr: "" }),
+      fakeTransport(),
+      fakeTargets((user) => {
+        if (user === "nautilo") throw new Error("password authentication failed for user nautilo");
       }),
     );
     expect(report.mode).toBe("authoritative");
@@ -238,6 +403,7 @@ describe("D427 dev:verify — runAuthoritativeAcceptance (report mapping)", () =
                 ? Promise.resolve(fakeResponse(true, 200, JSON.stringify({ issuer: "http://logto" })))
                 : Promise.resolve(fakeResponse(true, 200, "<html>spa</html>")),
       }),
+      fakeTargets(),
     );
     expect(report.allPassed).toBe(false);
     expect(

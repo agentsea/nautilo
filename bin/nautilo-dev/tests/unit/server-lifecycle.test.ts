@@ -7,8 +7,10 @@ import {
   checkFirstPartyAppPrerequisitesForServerStart,
   checkWorkbenchDistForServerStart,
   fetchServerHealth,
+  HEALTH_WAIT_MS,
   runServerStart,
   serverDaemonEnv,
+  spawnDetachedServer,
   type ServerStartDeps,
 } from "../../src/commands/server-start";
 import { runServerStop, type ServerStopDeps } from "../../src/commands/server-stop";
@@ -301,6 +303,172 @@ describe("runServerStart", () => {
     expect(kills.map((k) => k.signal)).toEqual(["SIGTERM", "SIGKILL"]);
     expect(kills.every((k) => k.pid === 777)).toBe(true);
   });
+
+  /** Deps for a fresh daemon launch on a fake clock; `over` sets what a test is about. */
+  function bootDeps(clock: { t: number }, over: Partial<ServerStartDeps>): ServerStartDeps {
+    return {
+      paths,
+      readPidFile: () => null,
+      writePidFile: () => {},
+      removePidFile: () => {},
+      isProcessAlive: (pid) => pid === 4242,
+      spawnDaemon: () => 4242,
+      fetchHealth: async () => ({ ok: false }),
+      findListenerPid: () => null,
+      looksLikeNautiloServer: () => false,
+      provisionAgentBrowser: async () => true,
+      provisionOfficeCli: () => {},
+      log: () => {},
+      warn: () => {},
+      now: () => clock.t,
+      sleep: async (ms) => {
+        clock.t += ms;
+      },
+      killPid: () => {
+        throw new Error("unexpected kill");
+      },
+      ...over,
+    };
+  }
+
+  test("a booting server that never binds is stopped by the PID from its spawn (no server.pid yet)", async () => {
+    // server.pid is written only after the listener binds, so a slow boot
+    // used to leave an orphaned daemon behind when the wait expired.
+    const clock = { t: 0 };
+    const kills: { pid: number; signal: NodeJS.Signals }[] = [];
+    const warnings: string[] = [];
+    const deps = bootDeps(clock, {
+      warn: (s) => { warnings.push(s); },
+      killPid: (pid, signal) => { kills.push({ pid, signal }); },
+    });
+    expect(await runServerStart(deps)).toBe(1);
+    expect(clock.t).toBeGreaterThanOrEqual(HEALTH_WAIT_MS);
+    expect(kills).toEqual([
+      { pid: 4242, signal: "SIGTERM" },
+      { pid: 4242, signal: "SIGKILL" },
+    ]);
+    expect(warnings.at(-1)).toContain(`timed out after ${HEALTH_WAIT_MS}ms`);
+  });
+
+  test("keeps waiting past the former 90 s bound while the server is alive and booting", async () => {
+    const clock = { t: 0 };
+    const deps = bootDeps(clock, {
+      readPidFile: () => (clock.t >= 120_000 ? 4242 : null),
+      fetchHealth: async () => (clock.t >= 120_000 ? { ok: true, status: "ready" } : { ok: false }),
+    });
+    expect(await runServerStart(deps)).toBe(0);
+  });
+
+  test("a server that exits during boot fails at once instead of waiting out the deadline", async () => {
+    const clock = { t: 0 };
+    const warnings: string[] = [];
+    const deps = bootDeps(clock, {
+      isProcessAlive: (pid) => pid === 4242 && clock.t < 5_000,
+      warn: (s) => { warnings.push(s); },
+    });
+    expect(await runServerStart(deps)).toBe(1);
+    expect(clock.t).toBeLessThan(6_000);
+    expect(warnings).toEqual([
+      `[server:start] server process 4242 exited before ${paths.serverUrl}/health became ready (see ${paths.logPath})`,
+    ]);
+  });
+
+  test("a server process that cannot be started fails at once", async () => {
+    const clock = { t: 0 };
+    const warnings: string[] = [];
+    const deps = bootDeps(clock, {
+      spawnDaemon: () => {
+        throw new Error("the server process could not be started");
+      },
+      warn: (s) => { warnings.push(s); },
+    });
+    expect(await runServerStart(deps)).toBe(1);
+    expect(clock.t).toBe(0);
+    expect(warnings).toEqual(["[server:start] the server process could not be started; no server was started"]);
+  });
+
+  test("a server whose PID is unknown is not killed at the deadline", async () => {
+    const clock = { t: 0 };
+    const deps = bootDeps(clock, { spawnDaemon: () => {} });
+    expect(await runServerStart(deps)).toBe(1);
+    expect(clock.t).toBeGreaterThanOrEqual(HEALTH_WAIT_MS);
+  });
+});
+
+describe("spawnDetachedServer", () => {
+  function isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function waitUntilGone(pid: number, timeoutMs: number): Promise<boolean> {
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+      if (!isAlive(pid)) return true;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return !isAlive(pid);
+  }
+
+  /** A "server" that stays alive and never answers a health probe. */
+  const idleServer = { entry: "-e", args: ["setInterval(() => {}, 1000)"], env: process.env };
+
+  test("real processes: returns the PID of a running detached process", async () => {
+    const pid = spawnDetachedServer(idleServer);
+    try {
+      expect(isAlive(pid)).toBe(true);
+    } finally {
+      process.kill(pid, "SIGKILL");
+    }
+    expect(await waitUntilGone(pid, 10_000)).toBe(true);
+  }, 30_000);
+
+  test("real processes: a server started right before the deadline is stopped", async () => {
+    // The deadline passes directly after the spawn, before the server could
+    // write server.pid or anything else: the PID held from the spawn is the
+    // only way to stop it, and nothing may be left running after the error.
+    let spawned: number | null = null;
+    let calls = 0;
+    const deps: ServerStartDeps = {
+      paths,
+      readPidFile: () => null,
+      writePidFile: () => {},
+      removePidFile: () => {},
+      isProcessAlive: isAlive,
+      spawnDaemon: () => {
+        spawned = spawnDetachedServer(idleServer);
+        return spawned;
+      },
+      fetchHealth: async () => ({ ok: false }),
+      findListenerPid: () => null,
+      looksLikeNautiloServer: () => false,
+      provisionAgentBrowser: async () => true,
+      provisionOfficeCli: () => {},
+      log: () => {},
+      warn: () => {},
+      // The first reading sets the deadline, every later one is past it.
+      now: () => (calls++ === 0 ? 0 : HEALTH_WAIT_MS),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      killPid: (pid, signal) => {
+        try {
+          process.kill(pid, signal);
+        } catch {
+          /* already gone */
+        }
+      },
+    };
+    try {
+      expect(await runServerStart(deps)).toBe(1);
+      expect(spawned).not.toBeNull();
+      expect(await waitUntilGone(spawned!, 10_000)).toBe(true);
+    } finally {
+      if (spawned !== null && isAlive(spawned)) process.kill(spawned, "SIGKILL");
+    }
+  }, 30_000);
 });
 
 describe("serverDaemonEnv", () => {

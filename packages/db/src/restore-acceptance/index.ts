@@ -19,6 +19,7 @@ export {
   type RuntimeAcceptanceExecResult,
   type RuntimeAcceptanceTransport,
   type RuntimeAcceptanceAppRoleProbe,
+  type RuntimeAcceptanceProbeExecution,
   type RuntimeAcceptanceDirectPostgresProbe,
   type RuntimeAcceptanceTargets,
   type RuntimeAcceptanceCheck,
