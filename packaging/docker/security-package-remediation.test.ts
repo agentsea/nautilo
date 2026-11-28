@@ -66,12 +66,12 @@ describe("Debian 13 security update and exception retirement", () => {
     ]);
     expect(floors.has("chromium-common")).toBe(false);
     expect(floors.has("chromium-headless-shell")).toBe(false);
-    expect(CHROMIUM_VENDOR_MANIFEST.version).toBe("158.0.8127.36");
+    expect(CHROMIUM_VENDOR_MANIFEST.version).toBe("158.0.8127.88");
     expect(Object.keys(CHROMIUM_VENDOR_MANIFEST.targets).sort()).toEqual(["linux/amd64", "linux/arm64"]);
     for (const platform of ["linux/amd64", "linux/arm64"] as const) {
       const pin = CHROMIUM_VENDOR_MANIFEST.targets[platform];
       const upstreamPlatform = platform === "linux/amd64" ? "linux64" : "linux-arm64";
-      expect(pin.url).toBe(`https://storage.googleapis.com/chrome-for-testing-public/158.0.8127.36/${upstreamPlatform}/chrome-headless-shell-${upstreamPlatform}.zip`);
+      expect(pin.url).toBe(`https://storage.googleapis.com/chrome-for-testing-public/158.0.8127.88/${upstreamPlatform}/chrome-headless-shell-${upstreamPlatform}.zip`);
       expect(pin.sha256).toMatch(/^[a-f0-9]{64}$/);
       expect(pin.executableSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(pin.size).toBeGreaterThan(0);
