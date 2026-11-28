@@ -1534,18 +1534,11 @@ export function WorkbenchShell() {
         roomId: artifactEventTarget.roomId,
         onReconnect: () => {
           setWorkSurface((previous) => {
-            const target =
-              previous.kind === "file" && previous.file.kind === "artifact"
-                ? previous.file
-                : previous.kind === "app" && previous.target?.kind === "artifact"
-                  ? previous.target
-                  : null;
-            if (!target || target.id !== artifactEventTarget.id) return previous;
-            if (previous.kind === "app") return previous;
-            return {
-              ...previous,
-              file: reloadArtifactOpenFileTarget(target),
-            };
+            // The mounted editor resyncs and rebases its draft on reconnect.
+            if (previous.kind !== "file" || previous.mode !== "read") return previous;
+            const target = previous.file;
+            if (target.kind !== "artifact" || target.id !== artifactEventTarget.id) return previous;
+            return { ...previous, file: reloadArtifactOpenFileTarget(target) };
           });
         },
       });

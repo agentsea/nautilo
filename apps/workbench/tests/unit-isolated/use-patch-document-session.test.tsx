@@ -973,6 +973,10 @@ describe("usePatchDocumentSession", () => {
     expect(result.current.draft).toBe(initial);
     expect(applyPatchMock).toHaveBeenCalledTimes(0);
     expect(saveArtifactMock).toHaveBeenCalledTimes(0);
+    loadLatest.mockImplementationOnce(async () => readyLoad(initial, 2));
+    await act(async () => { await artifactEventOptions?.onReconnect?.(); });
+    expect(result.current.draft).toBe(initial);
+    expect(result.current.errorMessage).toBeNull();
     unmount();
   });
 

@@ -11,6 +11,7 @@ export {
   AgentInvocationRequiredError,
   StrictShadowProtectedContentRequiredError,
   ArtifactWriteRequiredError,
+  WorkspaceArtifactLengthMismatchError,
   OwnerClaimApiError,
   OwnerClaimAmbiguousWriteError,
   AgentPhotoLibraryApiError,

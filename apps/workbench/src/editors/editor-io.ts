@@ -1,5 +1,5 @@
 import type { OpenFileTarget } from "../components/browser-column/open-file-target";
-import { ConflictError } from "@nautilo/api-client/browser";
+import { ConflictError, WorkspaceArtifactLengthMismatchError } from "@nautilo/api-client/browser";
 import { apiClient } from "../lib/api";
 import { desktopAPI } from "../lib/desktop";
 import type { AnchoredTextPatch } from "@nautilo/types";
@@ -37,40 +37,52 @@ export async function sha256HexForText(text: string): Promise<string> {
     .join("");
 }
 
+async function loadArtifactText(
+  file: Extract<OpenFileTarget, { kind: "artifact" }>,
+): Promise<LoadEditableTextResult> {
+  const scope = file.roomId === undefined ? undefined : { roomId: file.roomId };
+  const metadata = () => scope
+    ? apiClient.getWorkspaceArtifact(file.id, scope)
+    : apiClient.getWorkspaceArtifact(file.id);
+
+  let version = await metadata();
+  // A save can land between metadata and bytes. Retry one confirmed revision
+  // change, retaining the original draft until a complete read is verified.
+  for (let retried = false; ; retried = true) {
+    if (!version) return { kind: "error", message: "File no longer exists." };
+    if (!Number.isSafeInteger(version.size) || version.size < 0 ||
+        !Number.isSafeInteger(version.revision) || version.revision < 0) {
+      return { kind: "error", message: "Could not verify the document version and size." };
+    }
+    if (version.size > MAX_TEXT_PREVIEW_BYTES) return { kind: "too_large" };
+
+    const read = await apiClient.getWorkspaceArtifactBytesArrayBuffer(file.id, {
+      ...scope, maxBytes: MAX_TEXT_PREVIEW_BYTES, expectedBytes: version.size,
+    }).catch((error: unknown) => {
+      if (error instanceof WorkspaceArtifactLengthMismatchError) return error;
+      throw error;
+    });
+    const latest = await metadata();
+    if (!latest) return { kind: "error", message: "File no longer exists." };
+    if (latest.revision > version.revision && !retried) {
+      version = latest;
+      continue;
+    }
+    if (latest.revision !== version.revision || latest.size !== version.size) {
+      return { kind: "error", message: "The document changed while loading. Try again." };
+    }
+    if (read instanceof WorkspaceArtifactLengthMismatchError) throw read;
+    const content = new TextDecoder().decode(read);
+    return { kind: "ready", content, baseSha256: await sha256HexForText(content), baseRevision: version.revision };
+  }
+}
+
 export async function loadEditableText(
   file: OpenFileTarget,
 ): Promise<LoadEditableTextResult> {
   try {
     if (file.kind === "artifact") {
-      const roomOpts =
-        file.roomId !== undefined ? { roomId: file.roomId } : undefined;
-      const dto =
-        roomOpts !== undefined
-          ? await apiClient.getWorkspaceArtifact(file.id, roomOpts)
-          : await apiClient.getWorkspaceArtifact(file.id);
-      if (!dto) return { kind: "error", message: "File no longer exists." };
-      if (!Number.isSafeInteger(dto.size) || dto.size < 0 || !Number.isSafeInteger(dto.revision) || dto.revision < 0) {
-        return { kind: "error", message: "Could not verify the document version and size." };
-      }
-      if (dto.size > MAX_TEXT_PREVIEW_BYTES) return { kind: "too_large" };
-      // A resync replaces the retained draft. Never promote a truncated body
-      // (including an empty response for a nonempty document) into a new base.
-      const bytes = await apiClient.getWorkspaceArtifactBytesArrayBuffer(file.id, {
-        ...roomOpts, maxBytes: MAX_TEXT_PREVIEW_BYTES, expectedBytes: dto.size,
-      });
-      const latest = roomOpts !== undefined
-        ? await apiClient.getWorkspaceArtifact(file.id, roomOpts)
-        : await apiClient.getWorkspaceArtifact(file.id);
-      if (!latest || latest.revision !== dto.revision || latest.size !== dto.size) {
-        return { kind: "error", message: "The document changed while loading. Try again." };
-      }
-      const content = new TextDecoder().decode(bytes);
-      return {
-        kind: "ready",
-        content,
-        baseSha256: await sha256HexForText(content),
-        baseRevision: dto.revision,
-      };
+      return await loadArtifactText(file);
     }
 
     if (!desktopAPI) {

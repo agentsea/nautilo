@@ -55,7 +55,9 @@ describe("editor shell wiring", () => {
     expect(shell).toContain('event.type === "document.patch.applied"');
     expect(shell).toContain('prev.mode === "edit"');
     expect(shell).toContain('reloadToken: (prev.file.reloadToken ?? 0) + 1');
-    expect(shell).toContain("onReconnect: () =>");
+    const reconnect = shell.slice(shell.indexOf("onReconnect: () =>"), shell.indexOf("if (!fsEventTarget)"));
+    expect(reconnect).toContain('previous.mode !== "read"');
+    expect(reconnect).toContain("reloadArtifactOpenFileTarget(target)");
   });
 
   test("EditorSurface reload is keyed on remountKey, not file object identity", () => {

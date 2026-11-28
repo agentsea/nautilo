@@ -3104,6 +3104,9 @@ class WorkspaceArtifactStreamError extends Error {
   }
 }
 
+/** The bounded read disagreed with the decoded length from artifact metadata. */
+export class WorkspaceArtifactLengthMismatchError extends WorkspaceArtifactStreamError {}
+
 function createAbortError(): DOMException {
   return new DOMException("The Artifact byte request was aborted.", "AbortError");
 }
@@ -13435,7 +13438,7 @@ export class NautiloApiClient {
     }
   }
 
-  async getWorkspaceArtifact(id: string, opts?: { roomId?: string }): Promise<ArtifactDto | null> {
+  async getWorkspaceArtifact(id: string, opts?: { roomId?: string; signal?: AbortSignal }): Promise<ArtifactDto | null> {
     const enc = encodeURIComponent(id);
     const q =
       opts?.roomId !== undefined && opts.roomId.length > 0
@@ -13443,6 +13446,8 @@ export class NautiloApiClient {
         : "";
     const res = await this._fetch(`${this.baseUrl}/api/workspace/artifacts/${enc}${q}`, {
       headers: this.authHeaders(),
+      cache: "no-store",
+      ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     if (res.status === 404) return null;
     if (!res.ok) {
@@ -13529,6 +13534,7 @@ export class NautiloApiClient {
       response = await this._fetch(this.getWorkspaceArtifactBytesUrl(id, opts), {
         headers: this.authHeaders(),
         redirect: "error",
+        cache: "no-store",
         ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
       });
     } catch (error) {
@@ -13565,7 +13571,7 @@ export class NautiloApiClient {
       declaredBytes !== undefined &&
       expectedBytes !== declaredBytes
     ) {
-      throw new WorkspaceArtifactStreamError(
+      throw new WorkspaceArtifactLengthMismatchError(
         "content_length",
         "Artifact response size does not match its authorized metadata.",
       );
@@ -13596,12 +13602,10 @@ export class NautiloApiClient {
         }
         if (knownLengthOutput !== undefined) {
           if (chunk.byteLength > knownLengthOutput.byteLength - received) {
-            throw new WorkspaceArtifactStreamError(
-              "truncated",
-              declaredBytes === undefined
-                ? "Artifact response exceeded its authorized size."
-                : "Artifact response exceeded its content length.",
-            );
+            if (declaredBytes === undefined) {
+              throw new WorkspaceArtifactLengthMismatchError("truncated", "Artifact response exceeded its authorized size.");
+            }
+            throw new WorkspaceArtifactStreamError("truncated", "Artifact response exceeded its content length.");
           }
           knownLengthOutput.set(chunk, received);
         } else {
@@ -13614,7 +13618,7 @@ export class NautiloApiClient {
         throw new WorkspaceArtifactStreamError("truncated", "Artifact response ended before its content length.");
       }
       if (expectedBytes !== undefined && received !== expectedBytes) {
-        throw new WorkspaceArtifactStreamError(
+        throw new WorkspaceArtifactLengthMismatchError(
           "truncated",
           "Artifact response size does not match its authorized metadata.",
         );
